@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Monitoreo — Agente de Concursos</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="topnav" id="topnav"></div>
+  <div class="container">
+    <h1>Monitoreo</h1>
+    <p class="subtitle">Convocatorias detectadas por el pipeline (Etapa 1, en producción) — de solo lectura, igual para cualquier rol</p>
+    <div id="estadoCarga"></div>
+    <div class="card">
+      <div class="table-scroll">
+      <table>
+        <thead><tr><th>Fuente</th><th>Convocatoria</th><th>Categoría</th><th>Cierre</th><th></th></tr></thead>
+        <tbody id="filas"></tbody>
+      </table>
+      </div>
+    </div>
+  </div>
+  <script src="/common.js"></script>
+  <script>
+    async function cargar() {
+      await initNav('monitoreo');
+      mostrarCargando('estadoCarga');
+      let rows;
+      try {
+        rows = await api('/api/monitoreo');
+      } catch (e) {
+        mostrarErrorCarga('estadoCarga', e.message);
+        return;
+      }
+      ocultarCargando('estadoCarga');
+      if (rows.length === 0) {
+        document.getElementById('filas').innerHTML = '<tr><td colspan="5" class="muted small">Sin convocatorias detectadas todavía.</td></tr>';
+        return;
+      }
+      document.getElementById('filas').innerHTML = rows.map(c => `
+        <tr>
+          <td><span class="badge neutro">${c.fuente}</span></td>
+          <td>${c.titulo}${c.origen_dato === 'real' ? '' : ' <span class="small muted">(sintético)</span>'}</td>
+          <td class="small muted">${c.categoria || '—'}</td>
+          <td class="small">${c.fecha_cierre ? fmtFecha(c.fecha_cierre) : '—'}</td>
+          <td>${c.link ? `<a href="${c.link}" target="_blank" rel="noopener" class="small">Ver ↗</a>` : ''}</td>
+        </tr>`).join('');
+    }
+    cargar();
+  </script>
+</body>
+</html>

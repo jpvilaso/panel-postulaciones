@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Panel del director — Agente de Concursos</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="topnav" id="topnav"></div>
+  <div class="container">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+      <div>
+        <h1>Panel del director</h1>
+        <p class="subtitle">Vista agregada de solo lectura — orden por urgencia, señal algedónica aparte y costos contra umbral (inspirado en el Opsroom de Cybersyn)</p>
+      </div>
+      <button class="btn small secundario no-print" id="btnImprimir" style="margin-top:4px">🖨 Imprimir / Guardar como PDF</button>
+    </div>
+    <div id="estadoCarga"></div>
+
+    <div id="atencionInmediata"></div>
+
+    <div class="card">
+      <h2>Notificaciones</h2>
+      <div id="notifs"><span class="muted small">Cargando…</span></div>
+    </div>
+
+    <div class="card" id="metaCard">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+        <h2>Meta anual</h2>
+        <button class="btn small secundario no-print" id="btnEditarMeta">✎ Editar meta</button>
+      </div>
+      <div id="metaContenido"><span class="muted small">Cargando…</span></div>
+    </div>
+
+    <div class="stat-grid" id="conteo"></div>
+
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+        <h2>Postulaciones activas</h2>
+        <button class="btn small secundario no-print" id="btnExportarPost">⬇ Exportar CSV</button>
+      </div>
+      <div class="table-scroll">
+      <table id="tablaPost"><thead><tr><th>Convocatoria</th><th>Etapa</th><th>Responsable</th><th>Próximo hito</th><th>Semáforo</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Puntos de atención</h2>
+      <div class="pill-list" id="puntosAtencion"></div>
+    </div>
+
+    <div class="card">
+      <h2>KPIs del portafolio</h2>
+      <div class="stat-grid" id="kpis"></div>
+      <div id="embudo" style="margin-top:14px"></div>
+    </div>
+
+    <div class="card">
+      <h2>3 week look ahead</h2>
+      <div class="lookahead-cols" id="lookahead"></div>
+      <div id="restricciones" style="margin-top:14px"></div>
+    </div>
+
+    <div class="card">
+      <h2>Costos del mes</h2>
+      <div id="costos"></div>
+    </div>
+
+    <div class="card">
+      <h2>Carga de trabajo por responsable</h2>
+      <p class="small muted" style="margin-top:-6px">Documentos pendientes asignados a cada persona del equipo — para repartir mejor antes de que alguien quede con demasiado encima.</p>
+      <div id="cargaTrabajo"></div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+        <h2>Listado de documentos</h2>
+        <button class="btn small secundario no-print" id="btnExportarDocs">⬇ Exportar CSV</button>
+      </div>
+      <p class="small muted" style="margin-top:-6px">Todas las postulaciones, agrupadas — las que tienen algo pendiente van primero. Solo lectura: para reunir, auditar o subir un documento entra al detalle de la postulación.</p>
+      <div id="checklistDocs"></div>
+    </div>
+  </div>
+
+  <script src="/common.js"></script>
+  <script>
+    const ETAPAS = { 1: '1. Detección', 2: '2. Aviso', 3: '3. Decidir', 4: '4. Analizar bases', 5: '5. Preparar', 6: '6. Enviar', 7: '7. Seguimiento' };
+    let ultimoMeta = null;
+
+    function renderMeta(meta) {
+      ultimoMeta = meta;
+      const el = document.getElementById('metaContenido');
+      if (!meta.monto_meta) {
+        el.innerHTML = `<p class="small muted">Sin meta definida para ${meta.anio} — ${fmtMoney(meta.monto_adjudicado)} adjudicados hasta ahora. Usa "Editar meta" para definir un objetivo.</p>`;
+        return;
+      }
+      const pct = Math.min(100, meta.porcentaje);
+      el.innerHTML = `
+        <div class="small" style="margin-bottom:6px">${fmtMoney(meta.monto_adjudicado)} de ${fmtMoney(meta.monto_meta)} (${meta.porcentaje}%) — meta ${meta.anio}</div>
+        <div style="background:var(--gray-bg,#eef0f4); border-radius:6px; height:14px; overflow:hidden;">
+          <div style="background:${meta.porcentaje >= 100 ? 'var(--green-text)' : 'var(--navy)'}; height:100%; width:${pct}%;"></div>
+        </div>`;
+    }
+
+    async function cargar() {
+      await initNav('director');
+      mostrarCargando('estadoCarga');
+      let d;
+      try {
+        d = await api('/api/panel-director');
+      } catch (e) {
+        mostrarErrorCarga('estadoCarga', e.message);
+        return;
+      }
+      ocultarCargando('estadoCarga');
+
+      renderNotificaciones('notifs', d.notificaciones || []);
+      renderMeta(d.meta);
+
+      const ai = document.getElementById('atencionInmediata');
+      if (d.atencionInmediata.length) {
+        ai.innerHTML = `<div class="card" style="border-color:var(--red-border); background:var(--red-bg)">
+          <h2 style="color:var(--red-text)">⚠ Atención inmediata (${d.atencionInmediata.length})</h2>
+          ${d.atencionInmediata.map(p => `<div class="small">— <b>${p.convocatoria_titulo}</b>: ${p.semaforo_razon} Se saltó el flujo normal del equipo (escalada en el triage).</div>`).join('')}
+        </div>`;
+      }
+
+      document.getElementById('conteo').innerHTML = `
+        <div class="stat-box"><div class="n" style="color:var(--green-text)">${d.conteo.verde}</div><div class="label">Verde — en plazo</div></div>
+        <div class="stat-box"><div class="n" style="color:var(--amber-text)">${d.conteo.ambar}</div><div class="label">Ámbar — por vencer</div></div>
+        <div class="stat-box"><div class="n" style="color:var(--red-text)">${d.conteo.rojo}</div><div class="label">Rojo — vencido / falta doc.</div></div>
+      `;
+
+      const tbody = document.querySelector('#tablaPost tbody');
+      const orden = { rojo: 0, ambar: 1, verde: 2 };
+      const filas = [...d.postulaciones].sort((a, b) => orden[a.semaforo] - orden[b.semaforo]);
+      tbody.innerHTML = filas.map((p) => `
+        <tr class="clickable" data-id="${p.id}">
+          <td>${p.convocatoria_titulo}<div class="small muted">${p.convocatoria_fuente}</div></td>
+          <td>${ETAPAS[p.etapa_actual] || p.etapa_actual}</td>
+          <td>${p.responsable_nombre || '<span class="warn">⚠ sin asignar</span>'}</td>
+          <td>${p.proximo_hito_fecha ? fmtFecha(p.proximo_hito_fecha) : '<span class="warn">⚠ sin definir</span>'}</td>
+          <td>${badgeSemaforo(p.semaforo, p.semaforo_razon)}</td>
+        </tr>`).join('');
+      tbody.querySelectorAll('tr').forEach(tr => tr.addEventListener('click', () => window.location.href = `/postulacion.html?id=${tr.dataset.id}`));
+
+      const pa = d.puntosDeAtencion;
+      document.getElementById('puntosAtencion').innerHTML = `
+        <div class="fila"><span>Documentos con problema (no cumple / falta)</span><b>${pa.documentos_con_problema}</b></div>
+        <div class="fila"><span>Postulaciones sin responsable asignado</span><b>${pa.postulaciones_sin_responsable}</b></div>
+        <div class="fila"><span>Postulaciones sin próximo hito definido</span><b>${pa.postulaciones_sin_fecha}</b></div>
+      ` + (pa.detalle_documentos.length ? `<div style="margin-top:10px" class="small muted">${pa.detalle_documentos.map(x => `— ${x.convocatoria_titulo}: "${x.tipo}" (${x.estado_auditoria})`).join('<br>')}</div>` : '');
+
+      const k = d.kpis;
+      document.getElementById('kpis').innerHTML = `
+        <div class="stat-box"><div class="n">${k.tasaAdjudicacion === null ? '—' : k.tasaAdjudicacion + '%'}</div><div class="label">Tasa de adjudicación</div></div>
+        <div class="stat-box"><div class="n">${fmtMoney(k.montoAdjudicadoTotal)}</div><div class="label">Monto adjudicado (año en curso)</div></div>
+        <div class="stat-box"><div class="n">${k.totalActivas}</div><div class="label">Postulaciones activas ahora</div></div>
+      `;
+      document.getElementById('embudo').innerHTML = `<div class="small muted" style="margin-bottom:6px">Embudo por etapa</div>` +
+        Object.entries(k.embudo).map(([e, n]) => `
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+            <span class="small" style="width:110px">${ETAPAS[e]}</span>
+            <div style="background:var(--navy-tint); height:10px; width:${Math.max(4, n * 24)}px; border-radius:4px;"></div>
+            <span class="small muted">${n}</span>
+          </div>`).join('');
+
+      const la = document.getElementById('lookahead');
+      la.innerHTML = d.lookAhead.semanas.map((items, i) => `
+        <div class="col">
+          <h4>Semana ${i + 1}</h4>
+          ${items.length ? items.map(it => `<div class="item"><b>${it.postulacion}</b><br>${it.hito || 'hito'} — ${fmtFecha(it.fecha)}</div>`).join('') : '<div class="item muted">Sin hitos programados</div>'}
+        </div>`).join('');
+      const rEl = document.getElementById('restricciones');
+      if (d.lookAhead.restricciones.length) {
+        rEl.innerHTML = `<div class="small warn" style="margin-bottom:6px">⚠ Restricciones activas</div>` +
+          d.lookAhead.restricciones.map(r => `<div class="small">— <b>${r.tipo}</b>: ${r.postulacion}</div>`).join('');
+      }
+
+      const c = d.costos;
+      document.getElementById('costos').innerHTML = `
+        <div class="fila" style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:8px;">
+          <span>Gasto total registrado (API Claude)</span><b>US$ ${c.total.toFixed(2)}</b>
+        </div>
+        <div class="small muted">${c.llamadas} llamadas registradas · modo ${c.modoReal ? 'real (ANTHROPIC_API_KEY activa)' : 'demo (sin API key, costos sintéticos)'}</div>
+        <div style="margin-top:10px">${Object.entries(c.porEndpoint).map(([ep, v]) => `
+          <div class="fila"><span class="mono small">${ep}</span><span>US$ ${v.toFixed(2)}</span></div>`).join('')}</div>
+      `;
+
+      // Carga de trabajo: documentos no reunidos, agrupados por responsable
+      // — mismo dato que ya viaja en d.documentos (responsable_nombre viene
+      // del LEFT JOIN a usuarios), solo se agrega del lado del cliente.
+      const pendientesPorResp = {};
+      d.documentos.filter(doc => doc.estado !== 'reunido').forEach(doc => {
+        const nombre = doc.responsable_nombre || '⚠ Sin asignar';
+        pendientesPorResp[nombre] = (pendientesPorResp[nombre] || 0) + 1;
+      });
+      const filasCarga = Object.entries(pendientesPorResp).sort((a, b) => b[1] - a[1]);
+      document.getElementById('cargaTrabajo').innerHTML = filasCarga.length
+        ? filasCarga.map(([nombre, n]) => `
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+              <span class="small" style="width:160px">${nombre}</span>
+              <div style="background:${nombre.startsWith('⚠') ? 'var(--red-border)' : 'var(--navy-tint)'}; height:10px; width:${Math.max(4, n * 18)}px; border-radius:4px;"></div>
+              <span class="small muted">${n} pendiente${n === 1 ? '' : 's'}</span>
+            </div>`).join('')
+        : '<p class="small muted">No hay documentos pendientes.</p>';
+
+      renderChecklistDocumentos('checklistDocs', d.documentos);
+
+      document.getElementById('btnExportarPost').addEventListener('click', () => {
+        descargarCSV('postulaciones-activas.csv',
+          ['Convocatoria', 'Fuente', 'Etapa', 'Responsable', 'Próximo hito', 'Fecha próximo hito', 'Semáforo'],
+          filas.map(p => [p.convocatoria_titulo, p.convocatoria_fuente, ETAPAS[p.etapa_actual] || p.etapa_actual, p.responsable_nombre || 'Sin asignar', p.proximo_hito || '', p.proximo_hito_fecha || '', p.semaforo]));
+      });
+      document.getElementById('btnExportarDocs').addEventListener('click', () => {
+        descargarCSV('listado-documentos.csv',
+          ['Postulación', 'Documento', 'Fase', 'Responsable', 'Estado', 'Auditoría'],
+          d.documentos.map(doc => [doc.convocatoria_titulo, doc.tipo, doc.fase === 'convenio' ? 'Convenio' : 'Postulación', doc.responsable_nombre || 'Sin asignar', doc.estado, doc.estado_auditoria]));
+      });
+    }
+    document.getElementById('btnImprimir').addEventListener('click', () => window.print());
+    // Se ata una sola vez (fuera de cargar()) para no ir apilando listeners
+    // cada vez que se recarga el panel después de guardar una meta nueva.
+    document.getElementById('btnEditarMeta').addEventListener('click', async () => {
+      const anio = ultimoMeta ? ultimoMeta.anio : new Date().getFullYear();
+      const actual = ultimoMeta && ultimoMeta.monto_meta ? ultimoMeta.monto_meta : '';
+      const nuevo = prompt(`Monto meta de adjudicación para ${anio} (CLP, solo números):`, actual);
+      if (nuevo === null) return;
+      const monto = Number(String(nuevo).replace(/\D/g, ''));
+      if (!monto) { alert('Ingresa un monto válido, mayor a 0.'); return; }
+      try {
+        await api('/api/meta-anual', { method: 'POST', body: JSON.stringify({ monto_meta: monto }) });
+        await cargar();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+    cargar();
+  </script>
+</body>
+</html>

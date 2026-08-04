@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Calendario de hitos — Agente de Concursos</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="topnav" id="topnav"></div>
+  <div class="container">
+    <h1>Calendario de hitos</h1>
+    <p class="subtitle">Cierres de postulación y próximos hitos internos de todas las postulaciones, agrupados por mes — mismos datos que el look-ahead del panel del director, pero sin límite de 3 semanas.</p>
+    <div id="estadoCarga"></div>
+    <div class="card" style="margin-top:10px">
+      <label class="small muted" style="display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" id="chkSoloFuturos" checked />
+        Mostrar solo hitos futuros o de hoy
+      </label>
+    </div>
+    <div id="calendario"></div>
+  </div>
+
+  <script src="/common.js"></script>
+  <script>
+    let hitos = [];
+
+    function urgencia(fecha) {
+      const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+      const f = new Date(fecha + 'T00:00:00');
+      const dias = Math.round((f - hoy) / 86400000);
+      if (dias < 0) return { clase: 'gris', label: 'pasado' };
+      if (dias <= 7) return { clase: 'rojo', label: 'esta semana' };
+      if (dias <= 21) return { clase: 'ambar', label: 'próximas 3 semanas' };
+      return { clase: 'verde', label: 'más adelante' };
+    }
+
+    function render() {
+      const soloFuturos = document.getElementById('chkSoloFuturos').checked;
+      const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+      let lista = [...hitos].sort((a, b) => a.fecha.localeCompare(b.fecha));
+      if (soloFuturos) lista = lista.filter(h => new Date(h.fecha + 'T00:00:00') >= hoy);
+
+      const el = document.getElementById('calendario');
+      if (!lista.length) {
+        el.innerHTML = '<div class="card"><p class="small muted">No hay hitos para mostrar.</p></div>';
+        return;
+      }
+      const grupos = {};
+      lista.forEach(h => {
+        const mes = h.fecha.slice(0, 7);
+        if (!grupos[mes]) grupos[mes] = [];
+        grupos[mes].push(h);
+      });
+      el.innerHTML = Object.entries(grupos).map(([mes, items]) => {
+        const titulo = new Date(mes + '-01T00:00:00').toLocaleDateString('es-CL', { month: 'long', year: 'numeric' });
+        return `<div class="card">
+          <h2 style="text-transform:capitalize">${titulo}</h2>
+          <div class="pill-list">
+            ${items.map(h => {
+              const u = h.cumplido ? { clase: 'verde', label: 'cumplido' } : urgencia(h.fecha);
+              return `<div class="fila">
+                <span><a href="/postulacion.html?id=${h.postulacion_id}">${h.titulo}</a> — ${h.tipo}</span>
+                <b>${fmtFecha(h.fecha)} <span class="badge ${u.clase}">${u.label}</span></b>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    async function cargar() {
+      await initNav('calendario');
+      mostrarCargando('estadoCarga');
+      let postulaciones;
+      try {
+        postulaciones = await api('/api/postulaciones');
+      } catch (e) {
+        mostrarErrorCarga('estadoCarga', e.message);
+        return;
+      }
+      ocultarCargando('estadoCarga');
+      // Antes solo mostraba "el próximo hito" de cada postulación (el campo
+      // único proximo_hito_fecha); ahora una postulación puede tener varios
+      // hitos guardados (entrega intermedia, rendición, firma de convenio),
+      // así que se listan todos, no solo el que usa el semáforo.
+      hitos = [];
+      postulaciones.forEach(p => {
+        if (p.resultado === 'en_curso' && p.fecha_cierre) {
+          hitos.push({ fecha: p.fecha_cierre, tipo: 'Cierre de postulación', titulo: p.convocatoria_titulo, postulacion_id: p.id, cumplido: false });
+        }
+        (p.hitos || []).forEach(h => {
+          hitos.push({ fecha: h.fecha, tipo: h.titulo, titulo: p.convocatoria_titulo, postulacion_id: p.id, cumplido: !!h.cumplido });
+        });
+      });
+      render();
+      document.getElementById('chkSoloFuturos').addEventListener('change', render);
+    }
+    cargar();
+  </script>
+</body>
+</html>

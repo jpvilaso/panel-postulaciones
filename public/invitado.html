@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Acceso externo — Agente de Concursos</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="topnav" id="topnav" style="display:flex; align-items:center; padding:0 24px;">
+    <span class="brand">Agente de Concursos — Acceso externo</span>
+  </div>
+  <div class="container">
+    <div id="contenido"><p class="small muted">Cargando…</p></div>
+  </div>
+
+  <script>
+    // Página pública, sin sesión — no usa common.js (su api() redirige a
+    // /login.html en un 401, que no aplica acá: un invitado nunca inicia
+    // sesión). El token en la URL es la única credencial.
+    const params = new URLSearchParams(location.search);
+    const token = params.get('token') || '';
+
+    function fmtMoney(n) {
+      if (n === null || n === undefined) return '—';
+      return '$' + Number(n).toLocaleString('es-CL');
+    }
+
+    async function cargar() {
+      const el = document.getElementById('contenido');
+      if (!token) {
+        el.innerHTML = '<div class="card"><p class="warn">Falta el enlace completo (con el token) — pide que te reenvíen el link.</p></div>';
+        return;
+      }
+      let datos;
+      try {
+        const res = await fetch(`/api/invitado/${token}`);
+        datos = await res.json();
+        if (!res.ok) throw new Error(datos.error || 'Enlace inválido');
+      } catch (e) {
+        el.innerHTML = `<div class="card"><p class="warn">⚠ ${e.message}</p></div>`;
+        return;
+      }
+      render(datos);
+    }
+
+    function render(datos) {
+      const p = datos.postulacion;
+      const el = document.getElementById('contenido');
+      el.innerHTML = `
+        <h1>${p.convocatoria_titulo}</h1>
+        <p class="subtitle">${p.convocatoria_fuente}${p.folio ? ' · folio ' + p.folio : ''}</p>
+        <div class="card">
+          <p class="small">Hola ${datos.invitado.nombre} — este es un acceso acotado: solo ves los documentos que requieren tu firma en esta postulación, nada más del sistema interno.</p>
+        </div>
+        <div class="card" style="margin-top:14px">
+          <h2>Documentos que requieren tu firma</h2>
+          ${datos.documentos.length === 0 ? '<p class="small muted">No hay documentos pendientes de firma externa en esta postulación.</p>' : ''}
+          ${datos.documentos.map((d) => docCard(d, datos.invitado.puede_subir_archivo)).join('')}
+        </div>`;
+      wireForms();
+    }
+
+    function docCard(d, puedeSubir) {
+      const estadoLabel = d.ya_firmada ? 'Ya se recibió firmado, gracias' : (d.estado_firma === 'pendiente' ? 'Pendiente de tu firma' : d.estado_firma);
+      const claseBadge = d.ya_firmada ? 'verde' : 'ambar';
+      const descargar = d.contenido_generado
+        ? `<a class="btn small secundario" href="/api/invitado/${token}/documentos/${d.id}/descargar-borrador" target="_blank">⬇ Descargar borrador (.docx)</a>`
+        : '';
+      const subirForm = (puedeSubir && !d.ya_firmada)
+        ? `<form class="subir-form-invitado" data-id="${d.id}" style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+             <span class="small muted">Subir la versión firmada:</span>
+             <input type="file" name="archivo" required style="font-size:12px" />
+             <button type="submit" class="btn small">Subir</button>
+           </form>`
+        : '';
+      return `
+        <div class="doc-row" style="margin-top:10px">
+          <div class="doc-head">
+            <span class="doc-tipo">${d.tipo}</span>
+            <span class="badge ${claseBadge}">${estadoLabel}</span>
+          </div>
+          ${d.requisito ? `<div class="small muted">Requisito: “${d.requisito}”</div>` : ''}
+          ${descargar ? `<div class="doc-actions">${descargar}</div>` : ''}
+          ${subirForm}
+        </div>`;
+    }
+
+    function wireForms() {
+      document.querySelectorAll('.subir-form-invitado').forEach((form) => {
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const docId = form.dataset.id;
+          const input = form.querySelector('input[type=file]');
+          if (!input.files[0]) return;
+          const fd = new FormData();
+          fd.append('archivo', input.files[0]);
+          const btn = form.querySelector('button');
+          btn.disabled = true; btn.textContent = 'Subiendo…';
+          try {
+            const res = await fetch(`/api/invitado/${token}/documentos/${docId}/subir-archivo`, { method: 'POST', body: fd });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Error al subir el archivo');
+            await cargar();
+          } catch (e2) {
+            alert(e2.message);
+            btn.disabled = false; btn.textContent = 'Subir';
+          }
+        });
+      });
+    }
+
+    cargar();
+  </script>
+</body>
+</html>

@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Detalle de postulación — Agente de Concursos</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="topnav" id="topnav"></div>
+  <div class="container">
+    <div id="estadoCarga"></div>
+    <div id="encabezado"></div>
+    <div class="tabs">
+      <button data-tab="resumen" class="active">Resumen</button>
+      <button data-tab="cronograma">Cronograma</button>
+      <button data-tab="documentos">Documentos</button>
+      <button data-tab="actividad">Actividad</button>
+    </div>
+    <div id="tab-resumen" class="tabcontent"></div>
+    <div id="tab-cronograma" class="tabcontent" style="display:none"></div>
+    <div id="tab-documentos" class="tabcontent" style="display:none"></div>
+    <div id="tab-actividad" class="tabcontent" style="display:none"></div>
+  </div>
+
+  <script src="/common.js"></script>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const id = params.get('id');
+    let yo = null;
+    let datos = null;
+    let equipoUsuarios = [];
+    let plantillasDisponibles = [];
+
+    // estadoBadge, auditoriaBadge, SEVERIDAD_AUDITORIA y ordenarPorSeveridad
+    // ahora viven en common.js (se comparten con el checklist agregado de
+    // panel-equipo.html y panel-director.html).
+
+    async function recargarDetalle() {
+      mostrarCargando('estadoCarga');
+      try {
+        datos = await api(`/api/postulaciones/${id}`);
+      } catch (e) {
+        mostrarErrorCarga('estadoCarga', e.message);
+        return;
+      }
+      ocultarCargando('estadoCarga');
+      renderEncabezado();
+      renderResumen();
+      renderCronograma();
+      renderDocumentos();
+      renderActividad();
+    }
+
+    function renderEncabezado() {
+      const p = datos;
+      document.getElementById('encabezado').innerHTML = `
+        <h1>${p.convocatoria_titulo}</h1>
+        <p class="subtitle">${p.convocatoria_fuente} ${p.escalada_director ? '· <span class="warn">Escalada al director</span>' : ''}</p>
+        <div style="display:flex; gap:10px; align-items:center; margin-bottom:18px;">
+          ${badgeSemaforo(p.semaforo, p.semaforo_razon)}
+          <span class="badge neutro">Avance: ${p.avance}%</span>
+          <span class="badge neutro">${p.resultado === 'en_curso' ? 'En curso' : (p.resultado === 'adjudicada' ? 'Adjudicada' : 'Rechazada')}</span>
+          ${p.folio ? `<span class="small muted">Folio ${p.folio}</span>` : ''}
+        </div>`;
+    }
+
+    function renderResumen() {
+      const p = datos;
+      const campos = p.camposPersonalizados || [];
+      document.getElementById('tab-resumen').innerHTML = `
+        <div class="card">
+          <h2>Resumen ejecutivo</h2>
+          <p class="small">${p.resumen_ia || 'Sin resumen generado todavía.'}</p>
+          <div class="pill-list" style="margin-top:10px">
+            <div class="fila"><span>Responsable</span><b>${p.responsable_nombre || '⚠ sin asignar'}</b></div>
+            <div class="fila"><span>Monto solicitado</span><b>${fmtMoney(p.monto_solicitado)}</b></div>
+            ${p.monto_adjudicado ? `<div class="fila"><span>Monto adjudicado</span><b>${fmtMoney(p.monto_adjudicado)}</b></div>` : ''}
+            <div class="fila"><span>Fecha de cierre</span><b>${fmtFecha(p.fecha_cierre)}</b></div>
+            ${p.convocatoria_link ? `<div class="fila"><span>Fuente</span><a href="${p.convocatoria_link}" target="_blank" rel="noopener">Ver convocatoria original ↗</a></div>` : ''}
+          </div>
+        </div>
+        <div class="card" style="margin-top:14px">
+          <h2>Campos personalizados</h2>
+          <p class="small muted" style="margin-top:-6px">Datos propios de esta postulación que no tienen un campo fijo en el sistema (línea de financiamiento, contraparte propia, prioridad, etc.).</p>
+          ${campos.length === 0 ? '<p class="small muted">Sin campos agregados todavía.</p>' : ''}
+          <div class="pill-list">
+            ${campos.map(c => `<div class="fila">
+              <span>${c.clave}</span>
+              <span style="display:flex; gap:8px; align-items:center;">
+                <b>${c.valor}</b>
+                <button class="btn small secundario" data-borrar-campo="${c.id}">Eliminar</button>
+              </span>
+            </div>`).join('')}
+          </div>
+          <form id="nuevoCampoForm" style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <input type="text" id="nuevoCampoClave" placeholder="Nombre (ej. Línea de financiamiento)" style="flex:1; min-width:180px; font-size:13px; padding:8px" required />
+            <input type="text" id="nuevoCampoValor" placeholder="Valor" style="flex:1; min-width:140px; font-size:13px; padding:8px" required />
+            <button type="submit" class="btn small secundario">+ Agregar campo</button>
+          </form>
+        </div>`;
+      wireCamposPersonalizados();
+    }
+
+    function wireCamposPersonalizados() {
+      document.querySelectorAll('#tab-resumen [data-borrar-campo]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('¿Eliminar este campo?')) return;
+          try {
+            await api(`/api/campos/${btn.dataset.borrarCampo}`, { method: 'DELETE' });
+            await recargarDetalle();
+          } catch (e) {
+            alert(e.message);
+          }
+        });
+      });
+      const form = document.getElementById('nuevoCampoForm');
+      if (form) {
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const clave = document.getElementById('nuevoCampoClave').value.trim();
+          const valor = document.getElementById('nuevoCampoValor').value.trim();
+          if (!clave || !valor) return;
+          try {
+            await api(`/api/postulaciones/${id}/campos`, { method: 'POST', body: JSON.stringify({ clave, valor }) });
+            await recargarDetalle();
+          } catch (e2) {
+            alert(e2.message);
+          }
+        });
+      }
+    }
+
+    function renderCronograma() {
+      const p = datos;
+      const bookends = [
+        { label: 'Apertura', fecha: p.creado_en ? p.creado_en.slice(0, 10) : null, estado: 'cumplido' },
+        { label: 'Cierre de postulación', fecha: p.fecha_cierre, estado: p.resultado !== 'en_curso' ? 'cumplido' : 'pendiente' },
+      ];
+      // Antes esto mostraba un solo "próximo hito" hardcodeado; ahora
+      // `datos.hitos` puede tener varios (entrega intermedia, rendición de
+      // cuentas, firma de convenio, etc.) — el campo único que usa el
+      // semáforo (`proximo_hito_fecha`) se sigue calculando solo en el
+      // backend a partir de esta misma tabla, nunca a mano.
+      const hitos = [...(p.hitos || [])].sort((a, b) => a.fecha.localeCompare(b.fecha));
+      const hoy = new Date(new Date().toDateString());
+      document.getElementById('tab-cronograma').innerHTML = `
+        <div class="card"><h2>Línea de tiempo</h2>
+          <div class="pill-list">
+            ${bookends.map(h => `<div class="fila"><span>${h.label}${h.fecha ? ' — ' + fmtFecha(h.fecha) : ' — ⚠ sin definir'}</span>
+              <span class="badge ${h.estado === 'cumplido' ? 'verde' : 'gris'}">${h.estado}</span></div>`).join('')}
+          </div>
+        </div>
+        <div class="card" style="margin-top:14px">
+          <h2>Hitos</h2>
+          <p class="small muted" style="margin-top:-6px">Entregas intermedias, rendiciones, firma de convenio, etc. — el pendiente más próximo es el que usa el semáforo de esta postulación.</p>
+          ${hitos.length === 0 ? '<p class="small muted">Sin hitos agregados todavía.</p>' : ''}
+          <div class="pill-list">
+            ${hitos.map(h => {
+              const vencido = !h.cumplido && new Date(h.fecha + 'T00:00:00') < hoy;
+              return `<div class="fila">
+                <span>${h.titulo} — ${fmtFecha(h.fecha)}</span>
+                <span style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                  <span class="badge ${h.cumplido ? 'verde' : vencido ? 'rojo' : 'gris'}">${h.cumplido ? 'cumplido' : vencido ? 'vencido' : 'pendiente'}</span>
+                  <button class="btn small secundario" data-toggle-hito="${h.id}" data-cumplido="${h.cumplido ? 0 : 1}">${h.cumplido ? 'Marcar pendiente' : 'Marcar cumplido'}</button>
+                  <button class="btn small secundario" data-borrar-hito="${h.id}">Eliminar</button>
+                </span>
+              </div>`;
+            }).join('')}
+          </div>
+          <form id="nuevoHitoForm" style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <input type="text" id="nuevoHitoTitulo" placeholder="Título del hito (ej. Rendición de cuentas)" style="flex:1; min-width:200px; font-size:13px; padding:8px" required />
+            <input type="date" id="nuevoHitoFecha" style="font-size:13px; padding:8px" required />
+            <button type="submit" class="btn small secundario">+ Agregar hito</button>
+          </form>
+        </div>`;
+      wireHitos();
+    }
+
+    function wireHitos() {
+      document.querySelectorAll('#tab-cronograma [data-toggle-hito]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          try {
+            await api(`/api/hitos/${btn.dataset.toggleHito}/cumplido`, {
+              method: 'POST', body: JSON.stringify({ cumplido: btn.dataset.cumplido === '1' }),
+            });
+            await recargarDetalle();
+          } catch (e) {
+            alert(e.message);
+          }
+        });
+      });
+      document.querySelectorAll('#tab-cronograma [data-borrar-hito]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('¿Eliminar este hito?')) return;
+          try {
+            await api(`/api/hitos/${btn.dataset.borrarHito}`, { method: 'DELETE' });
+            await recargarDetalle();
+          } catch (e) {
+            alert(e.message);
+          }
+        });
+      });
+      const form = document.getElementById('nuevoHitoForm');
+      if (form) {
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const titulo = document.getElementById('nuevoHitoTitulo').value.trim();
+          const fecha = document.getElementById('nuevoHitoFecha').value;
+          if (!titulo || !fecha) return;
+          try {
+            await api(`/api/postulaciones/${id}/hitos`, { method: 'POST', body: JSON.stringify({ titulo, fecha }) });
+            await recargarDetalle();
+            document.querySelector('.tabs button[data-tab="cronograma"]').click();
+          } catch (e2) {
+            alert(e2.message);
+          }
+        });
+      }
+    }
+
+    function resumenGrupo(docs) {
+      const conProblema = docs.filter(d => d.estado_auditoria === 'no_cumple' || d.estado_auditoria === 'falta').length;
+      const sinAuditar = docs.filter(d => d.estado_auditoria === 'sin_auditar').length;
+      const cumplen = docs.filter(d => d.estado_auditoria === 'cumple').length;
+      return `<div class="doc-resumen">
+        ${conProblema ? `<b class="warn" style="color:var(--red-text)">${conProblema} con problema</b> · ` : ''}
+        ${sinAuditar} sin auditar · ${cumplen} cumplen · ${docs.length} en total
+      </div>`;
+    }
+
+    // Los documentos de la postulación (Etapa 5) y los de la firma de convenio
+    // (Etapa 7, solo si la postulación quedó adjudicada) son dos checklists
+    // distintos en momentos distintos del proceso — se agrupan en dos bloques
+    // separados en vez de una sola lista plana, para no mezclar 15-20 ítems
+    // de dos etapas distintas en un solo grupo (Ley de Proximidad / Miller).
+    function renderDocumentos() {
+      const puedeActuar = yo.rol === 'equipo';
+      const docsPostulacion = ordenarPorSeveridad(datos.documentos.filter(d => (d.fase || 'postulacion') === 'postulacion'));
+      const docsConvenio = ordenarPorSeveridad(datos.documentos.filter(d => d.fase === 'convenio'));
+
+      let html = '';
+      // Guardar/aplicar plantillas es una acción del equipo (arma o reutiliza
+      // el checklist), no del director (que solo revisa) — mismo criterio de
+      // permisos que ya usan los demás botones de acción de documentos.
+      if (yo.rol === 'equipo') {
+        html += `<div class="card" id="plantillasCard">
+          <h2>Plantillas de checklist</h2>
+          <p class="small muted" style="margin-top:-6px">Reutiliza el listado de documentos de esta postulación en otra, o aplica una plantilla guardada antes acá.</p>
+          <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px">
+            <button class="btn small secundario" id="btnGuardarPlantilla" ${datos.documentos.length ? '' : 'disabled'}>Guardar checklist actual como plantilla</button>
+            <select id="selPlantillas" style="font-size:13px; padding:6px"><option value="">Cargando plantillas…</option></select>
+            <button class="btn small secundario" id="btnAplicarPlantilla">Aplicar plantilla acá</button>
+          </div>
+        </div>`;
+      }
+      // Invitados externos solo tiene sentido si hay al menos un documento
+      // que requiere firma externa — es lo único que un invitado puede ver.
+      if (datos.documentos.some(d => d.requiere_firma_externa)) {
+        html += `<div class="card" id="invitadosCard">
+          <h2>Acceso externo</h2>
+          <p class="small muted" style="margin-top:-6px">Para quien tiene que firmar algo pero no tiene cuenta en el sistema (ej. un tercero externo) — ve solo los documentos con firma externa de esta postulación, nada más.</p>
+          <div id="listaInvitados"><span class="small muted">Cargando…</span></div>
+          <form id="nuevoInvitadoForm" style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <input type="text" id="nuevoInvitadoNombre" placeholder="Nombre del invitado (ej. Director regional Serpat)" style="flex:1; min-width:220px; font-size:13px; padding:8px" required />
+            <label class="small muted" style="display:flex; align-items:center; gap:4px;">
+              <input type="checkbox" id="nuevoInvitadoPuedeSubir" /> puede subir el archivo firmado
+            </label>
+            <button type="submit" class="btn small secundario">+ Crear enlace</button>
+          </form>
+        </div>`;
+      }
+      if (datos.documentos.length === 0) {
+        html += '<div class="card"><h2>Listado de documentos</h2><p class="small muted">Todavía no hay listado — falta aprobar la matriz de la Etapa 4.</p></div>';
+      } else {
+        html += `<div class="card"><h2>Documentos de la postulación</h2>
+          ${resumenGrupo(docsPostulacion)}
+          ${docsPostulacion.map((d) => docRow(d, puedeActuar)).join('')}
+        </div>`;
+        if (docsConvenio.length) {
+          html += `<div class="card"><h2>Documentos para la firma de convenio</h2>
+            <p class="small muted" style="margin-top:-6px">Se piden recién después de resultar adjudicada (bases 7.1–7.4) — listado aparte del de la postulación.</p>
+            ${resumenGrupo(docsConvenio)}
+            ${docsConvenio.map((d) => docRow(d, puedeActuar)).join('')}
+          </div>`;
+        }
+      }
+      document.getElementById('tab-documentos').innerHTML = html;
+      wireDocActions();
+      wireDocMeta();
+      if (yo.rol === 'equipo') wirePlantillas();
+      if (document.getElementById('invitadosCard')) wireInvitados();
+    }
+
+    // cargarListaInvitados() se llama varias veces (al abrir la pestaña, y
+    // de nuevo tras crear/revocar un acceso) — regenera el contenido de
+    // #listaInvitados por completo cada vez, así que sus propios botones
+    // (copiar/revocar) se pueden re-atar sin ir acumulando listeners. El
+    // formulario de creación, en cambio, es un elemento fijo que no se
+    // vuelve a crear — su listener se ata una sola vez en wireInvitados().
+    async function cargarListaInvitados() {
+      const el = document.getElementById('listaInvitados');
+      try {
+        const invitados = await api(`/api/postulaciones/${id}/invitados`);
+        el.innerHTML = invitados.length === 0
+          ? '<p class="small muted">Sin invitados creados todavía.</p>'
+          : invitados.map(inv => {
+              const link = `${location.origin}/invitado.html?token=${inv.token}`;
+              return `<div class="fila" style="align-items:center;">
+                <span>${inv.nombre} ${inv.revocado ? '<span class="badge gris">revocado</span>' : (inv.puede_subir_archivo ? '<span class="badge verde">puede subir</span>' : '<span class="badge gris">solo lectura</span>')}</span>
+                <span style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                  ${inv.revocado ? '' : `<button class="btn small secundario" data-copiar-link="${link}">📋 Copiar enlace</button>
+                  <button class="btn small secundario" data-revocar-invitado="${inv.id}">Revocar</button>`}
+                </span>
+              </div>`;
+            }).join('');
+      } catch (e) {
+        el.innerHTML = `<p class="small warn">No se pudo cargar (${e.message}).</p>`;
+      }
+      document.querySelectorAll('#listaInvitados [data-copiar-link]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(btn.dataset.copiarLink);
+            btn.textContent = '✓ Copiado';
+            setTimeout(() => { btn.textContent = '📋 Copiar enlace'; }, 1500);
+          } catch {
+            prompt('Copia el enlace:', btn.dataset.copiarLink);
+          }
+        });
+      });
+      document.querySelectorAll('#listaInvitados [data-revocar-invitado]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('¿Revocar este acceso? Ya no podrá usar su enlace.')) return;
+          try {
+            await api(`/api/invitados/${btn.dataset.revocarInvitado}/revocar`, { method: 'POST' });
+            cargarListaInvitados();
+          } catch (e) {
+            alert(e.message);
+          }
+        });
+      });
+    }
+
+    function wireInvitados() {
+      cargarListaInvitados();
+      const form = document.getElementById('nuevoInvitadoForm');
+      if (form) {
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const nombre = document.getElementById('nuevoInvitadoNombre').value.trim();
+          const puedeSubir = document.getElementById('nuevoInvitadoPuedeSubir').checked;
+          if (!nombre) return;
+          try {
+            await api(`/api/postulaciones/${id}/invitados`, { method: 'POST', body: JSON.stringify({ nombre, puede_subir_archivo: puedeSubir }) });
+            document.getElementById('nuevoInvitadoNombre').value = '';
+            document.getElementById('nuevoInvitadoPuedeSubir').checked = false;
+            cargarListaInvitados();
+          } catch (e2) {
+            alert(e2.message);
+          }
+        });
+      }
+    }
+
+    function docRow(d, puedeActuar) {
+      const claseFila = d.estado_auditoria === 'no_cumple' || d.estado_auditoria === 'falta' ? d.estado_auditoria : (d.estado_auditoria === 'cumple' ? 'cumple' : '');
+      let acciones = '';
+      let subirArchivo = '';
+      if (puedeActuar) {
+        if (d.origen === 'generado_ia') {
+          if (!d.contenido_generado) {
+            acciones += `<button class="btn small" data-accion="generar-anexo" data-id="${d.id}">Generar borrador (IA)</button>`;
+          } else {
+            acciones += `<a class="btn small secundario" href="/api/documentos/${d.id}/descargar-borrador" target="_blank">Descargar borrador (.docx)</a>`;
+            if (d.estado !== 'reunido' && !(d.requiere_firma_externa && d.estado_firma !== 'firmada')) {
+              acciones += `<button class="btn small" data-accion="aprobar-anexo" data-id="${d.id}">Aprobar borrador (sin subir archivo)</button>`;
+            }
+            if (d.estado !== 'reunido') {
+              subirArchivo = d.requiere_firma_externa
+                ? 'Subir la versión firmada para marcar como reunido'
+                : 'O sube la versión final editada/firmada';
+            }
+          }
+        } else if (!d.archivo_url) {
+          // Antes esto solo aparecía si el documento seguía "pendiente" — un
+          // documento ya "reunido" (ej. cargado directo en el seed/matriz,
+          // sin pasar por el formulario de subida) se quedaba sin ninguna
+          // forma de ver el archivo. Ahora, mientras no haya un archivo
+          // cargado, siempre se puede adjuntar uno — subir no cambia el
+          // estado si ya estaba reunido, solo agrega la copia digital.
+          subirArchivo = d.estado === 'reunido'
+            ? 'Adjuntar el archivo digital (reunido, pero sin copia cargada en el sistema)'
+            : 'Sube el archivo para marcar este documento como reunido';
+        }
+        if (d.estado === 'reunido' || d.estado === 'vencido') {
+          acciones += `<button class="btn small secundario" data-accion="auditar" data-id="${d.id}">Auditar (IA)</button>`;
+        }
+      }
+      const archivoLink = d.archivo_url ? `<div class="small"><a href="${d.archivo_url}" target="_blank">📎 Ver archivo subido ↗</a></div>` : '';
+      const subirForm = subirArchivo ? `
+        <form class="subir-form" data-id="${d.id}" style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+          <span class="small muted">${subirArchivo}:</span>
+          <input type="file" name="archivo" required style="font-size:12px" />
+          <button type="submit" class="btn small secundario">Subir</button>
+        </form>` : '';
+      // Responsable por documento — cualquiera de los dos roles puede
+      // (des)asignar (mismo permiso que tiene el endpoint), no solo "equipo",
+      // porque el director también reparte trabajo entre el equipo.
+      const responsableSelect = `
+        <div class="small" style="margin-top:8px; display:flex; align-items:center; gap:6px;">
+          <span class="muted">Responsable:</span>
+          <select class="resp-select" data-id="${d.id}" style="font-size:12px; padding:3px 6px">
+            <option value="">— sin asignar —</option>
+            ${equipoUsuarios.map(u => `<option value="${u.id}" ${d.responsable_id === u.id ? 'selected' : ''}>${u.nombre}</option>`).join('')}
+          </select>
+        </div>`;
+      // Comentar y ver historial de versiones están disponibles para
+      // cualquier rol logueado (mismo permiso que los endpoints), a
+      // diferencia de las acciones de arriba (generar/auditar/subir) que
+      // siguen siendo solo del equipo.
+      let accionesComunes = `<button class="btn small secundario" data-comentar="${d.id}">💬 Comentar</button>`;
+      if (d.archivo_url) accionesComunes += `<button class="btn small secundario" data-historial="${d.id}">🕘 Historial de versiones</button>`;
+      // Este listado (dentro del detalle de una postulación) queda siempre
+      // expandido — el desplegable solo aplica al checklist agregado
+      // (panel-equipo/panel-director), donde sí hace falta acortar la página.
+      // Flujo de aprobación con recordatorio: si el anexo lleva 48h+ sin
+      // aprobarse/reunirse, el backend ya mandó una notificación al
+      // responsable (`revisarRecordatoriosPendientes()`); acá se muestra el
+      // mismo plazo en la fila para que se vea sin tener que abrir la
+      // campanita de notificaciones.
+      let esperandoRevision = '';
+      if (d.origen === 'generado_ia' && d.contenido_generado && d.estado !== 'reunido' && d.generado_en) {
+        const horas = Math.round((Date.now() - new Date(d.generado_en.replace(' ', 'T') + 'Z')) / 3600000);
+        const vencido = horas >= 48;
+        const texto = horas < 24 ? `${horas} h` : `${Math.round(horas / 24)} d`;
+        esperandoRevision = `<div class="small ${vencido ? 'warn' : 'muted'}">${vencido ? '⏳ ' : ''}Esperando revisión hace ${texto}${d.recordatorio_enviado_en ? ' — ya se envió un recordatorio' : ''}</div>`;
+      }
+      return `
+        <div class="doc-row ${claseFila}">
+          <div class="doc-head">
+            <span class="doc-tipo">${d.tipo} ${d.sensible ? '<span class="small muted">🔒 sensible</span>' : ''}</span>
+            <span>${estadoBadge(d.estado)} ${d.origen === 'generado_ia' ? '<span class="badge neutro">Anexo IA</span>' : ''} ${auditoriaBadge(d.estado_auditoria)}</span>
+          </div>
+          ${d.requisito ? `<div class="small muted">Requisito: “${d.requisito}”</div>` : ''}
+          ${d.requiere_firma_externa ? `<div class="small warn">Requiere firma externa — estado: ${d.estado_firma}</div>` : ''}
+          ${esperandoRevision}
+          ${d.contenido_generado ? `<textarea rows="8" readonly>${d.contenido_generado}</textarea>` : ''}
+          ${d.detalle_auditoria ? `<div class="doc-detalle">Auditoría: ${d.detalle_auditoria}</div>` : ''}
+          ${archivoLink}
+          ${responsableSelect}
+          ${acciones ? `<div class="doc-actions">${acciones}</div>` : ''}
+          <div class="doc-actions">${accionesComunes}</div>
+          <div class="hist-panel small muted" id="hist-${d.id}" style="display:none; margin-top:6px; padding-top:6px; border-top:1px dashed var(--gray-border)"></div>
+          ${subirForm}
+        </div>`;
+    }
+
+    function wireDocActions() {
+      document.querySelectorAll('#tab-documentos [data-accion]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const accion = btn.dataset.accion;
+          const docId = btn.dataset.id;
+          if (accion === 'aprobar-anexo') {
+            const ok = confirm('¿Confirmas que leíste el borrador completo y que corresponde a los datos reales de la postulación? Esto lo marca como reunido sin subir un archivo aparte.');
+            if (!ok) return;
+          }
+          btn.disabled = true;
+          btn.textContent = 'Procesando…';
+          try {
+            await api(`/api/documentos/${docId}/${accion}`, { method: 'POST' });
+            await recargarDetalle();
+          } catch (e) {
+            alert(e.message);
+            btn.disabled = false;
+          }
+        });
+      });
+      document.querySelectorAll('#tab-documentos .subir-form').forEach((form) => {
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const docId = form.dataset.id;
+          const input = form.querySelector('input[type=file]');
+          if (!input.files[0]) return;
+          const fd = new FormData();
+          fd.append('archivo', input.files[0]);
+          const btn = form.querySelector('button');
+          btn.disabled = true; btn.textContent = 'Subiendo…';
+          try {
+            const res = await fetch(`/api/documentos/${docId}/subir-archivo`, { method: 'POST', body: fd });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Error al subir el archivo');
+            await recargarDetalle();
+          } catch (e2) {
+            alert(e2.message);
+            btn.disabled = false; btn.textContent = 'Subir';
+          }
+        });
+      });
+    }
+
+    // Responsable, comentarios e historial de versiones — disponibles para
+    // ambos roles, a diferencia de wireDocActions() (solo equipo).
+    function wireDocMeta() {
+      document.querySelectorAll('#tab-documentos .resp-select').forEach((sel) => {
+        sel.addEventListener('change', async () => {
+          const docId = sel.dataset.id;
+          sel.disabled = true;
+          try {
+            await api(`/api/documentos/${docId}/asignar`, {
+              method: 'POST',
+              body: JSON.stringify({ responsable_id: sel.value ? Number(sel.value) : null }),
+            });
+            await recargarDetalle();
+          } catch (e) {
+            alert(e.message);
+            sel.disabled = false;
+          }
+        });
+      });
+      document.querySelectorAll('#tab-documentos [data-comentar]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const docId = btn.dataset.comentar;
+          const texto = prompt('Comentario sobre este documento:');
+          if (!texto || !texto.trim()) return;
+          try {
+            await api(`/api/postulaciones/${id}/comentarios`, {
+              method: 'POST',
+              body: JSON.stringify({ texto: texto.trim(), documento_id: Number(docId) }),
+            });
+            await recargarDetalle();
+            document.querySelector('.tabs button[data-tab="actividad"]').click();
+          } catch (e) {
+            alert(e.message);
+          }
+        });
+      });
+      document.querySelectorAll('#tab-documentos [data-historial]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const docId = btn.dataset.historial;
+          const panel = document.getElementById(`hist-${docId}`);
+          if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+          panel.style.display = 'block';
+          panel.textContent = 'Cargando historial…';
+          try {
+            const versiones = await api(`/api/documentos/${docId}/versiones`);
+            panel.innerHTML = versiones.length
+              ? versiones.map(v => `<div>📎 <a href="${v.archivo_url}" target="_blank">${v.nombre_original || 'archivo'}</a> — subido por ${v.subido_por_nombre || '—'}, ${fmtFechaHora(v.creado_en)}</div>`).join('')
+              : 'Sin versiones registradas.';
+          } catch (e) {
+            panel.textContent = 'No se pudo cargar el historial (' + e.message + ')';
+          }
+        });
+      });
+    }
+
+    async function wirePlantillas() {
+      const sel = document.getElementById('selPlantillas');
+      if (!sel) return;
+      try {
+        plantillasDisponibles = await api('/api/plantillas');
+        sel.innerHTML = plantillasDisponibles.length
+          ? plantillasDisponibles.map(p => `<option value="${p.id}">${p.nombre} (${p.n_documentos} doc.)</option>`).join('')
+          : '<option value="">No hay plantillas guardadas todavía</option>';
+      } catch (e) {
+        sel.innerHTML = '<option value="">Error al cargar plantillas</option>';
+      }
+      document.getElementById('btnGuardarPlantilla').addEventListener('click', async () => {
+        const nombre = prompt('Nombre para esta plantilla (ej. "Checklist estándar CORFO"):');
+        if (!nombre || !nombre.trim()) return;
+        try {
+          await api(`/api/postulaciones/${id}/guardar-como-plantilla`, {
+            method: 'POST',
+            body: JSON.stringify({ nombre: nombre.trim() }),
+          });
+          alert('Plantilla guardada.');
+          await wirePlantillas();
+        } catch (e) {
+          alert(e.message);
+        }
+      });
+      document.getElementById('btnAplicarPlantilla').addEventListener('click', async () => {
+        if (!sel.value) { alert('Elige una plantilla primero.'); return; }
+        const ok = confirm('Se agregarán los documentos de esta plantilla que todavía no existan en el checklist de esta postulación. ¿Continuar?');
+        if (!ok) return;
+        try {
+          const res = await api(`/api/plantillas/${sel.value}/aplicar`, {
+            method: 'POST',
+            body: JSON.stringify({ postulacion_id: Number(id) }),
+          });
+          alert(`${res.agregados} documento(s) agregado(s)${res.ya_existian ? `, ${res.ya_existian} ya existían` : ''}.`);
+          await recargarDetalle();
+        } catch (e) {
+          alert(e.message);
+        }
+      });
+    }
+
+    function renderActividad() {
+      const comentarios = datos.comentarios || [];
+      document.getElementById('tab-actividad').innerHTML = `
+        <div class="card"><h2>Comentarios</h2>
+        ${comentarios.length === 0 ? '<p class="small muted">Sin comentarios todavía.</p>' : ''}
+        ${comentarios.map(c => `
+          <div class="notif-item"><span class="msg"><b>${c.usuario_nombre}</b>${c.documento_tipo ? ` sobre <i>${c.documento_tipo}</i>` : ''}: ${c.texto}</span>
+          <span class="cuando">${fmtFechaHora(c.creado_en)}</span></div>`).join('')}
+        <form id="comentarioGeneralForm" style="margin-top:10px; display:flex; gap:8px; align-items:flex-start;">
+          <input type="text" id="comentarioGeneralInput" placeholder="Escribe un comentario general sobre esta postulación…" style="flex:1; font-size:13px; padding:8px" />
+          <button type="submit" class="btn small secundario">Comentar</button>
+        </form>
+        </div>
+        <div class="card" style="margin-top:14px"><h2>Log de eventos</h2>
+        ${datos.eventos.length === 0 ? '<p class="small muted">Sin eventos todavía.</p>' : ''}
+        ${datos.eventos.map(ev => `
+          <div class="notif-item"><span class="msg"><b>${ev.usuario_nombre || 'Sistema'}</b> — ${ev.accion.replace(/_/g, ' ')}: ${ev.detalle || ''}</span>
+          <span class="cuando">${ev.creado_en}</span></div>`).join('')}
+        </div>`;
+      document.getElementById('comentarioGeneralForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const input = document.getElementById('comentarioGeneralInput');
+        const texto = input.value.trim();
+        if (!texto) return;
+        try {
+          await api(`/api/postulaciones/${id}/comentarios`, { method: 'POST', body: JSON.stringify({ texto }) });
+          await recargarDetalle();
+          document.querySelector('.tabs button[data-tab="actividad"]').click();
+        } catch (e2) {
+          alert(e2.message);
+        }
+      });
+    }
+
+    document.querySelectorAll('.tabs button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tabcontent').forEach(c => c.style.display = 'none');
+        btn.classList.add('active');
+        document.getElementById('tab-' + btn.dataset.tab).style.display = 'block';
+      });
+    });
+
+    async function iniciar() {
+      yo = await initNav(null);
+      try {
+        equipoUsuarios = await api('/api/usuarios-equipo');
+      } catch (e) {
+        equipoUsuarios = [];
+      }
+      await recargarDetalle();
+    }
+    iniciar();
+  </script>
+</body>
+</html>

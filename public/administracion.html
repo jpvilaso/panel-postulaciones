@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Configuración — Agente de Concursos</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="topnav" id="topnav"></div>
+  <div class="container">
+    <h1>Configuración</h1>
+    <p class="subtitle">Usuarios, permisos y umbrales configurables — los valores "pendiente de definir" son decisiones de negocio de la fundación, no técnicas</p>
+    <div id="estadoCarga"></div>
+
+    <div class="card" id="cardCrear">
+      <h2>Crear usuario</h2>
+      <form id="crearForm" class="form-inline">
+        <div class="campo">
+          <label for="nuevoNombre">Nombre</label>
+          <input type="text" id="nuevoNombre" required />
+        </div>
+        <div class="campo">
+          <label for="nuevoEmail">Correo</label>
+          <input type="email" id="nuevoEmail" required />
+        </div>
+        <div class="campo">
+          <label for="nuevoRol">Rol</label>
+          <select id="nuevoRol">
+            <option value="equipo">Equipo</option>
+            <option value="director">Director</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <button class="btn" type="submit">Crear</button>
+      </form>
+      <div id="avisoCrear"></div>
+    </div>
+
+    <div class="card">
+      <h2>Usuarios y roles</h2>
+      <div class="table-scroll">
+        <table>
+          <thead><tr>
+            <th>Nombre</th><th>Correo</th><th>Rol</th><th>Estado</th><th>2FA</th>
+            <th>Gestionar usuarios</th><th>Acciones</th>
+          </tr></thead>
+          <tbody id="usuarios"></tbody>
+        </table>
+      </div>
+      <p class="small muted" style="margin-top:10px">
+        "Gestionar usuarios" con fondo gris es el default de ese rol (admin/director lo traen de fábrica); con fondo azul es una excepción puntual otorgada a esa persona.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Umbrales configurables</h2>
+      <div class="pill-list" id="umbrales"></div>
+    </div>
+
+    <div class="card">
+      <h2 style="cursor:pointer" id="toggleLog">Log de seguridad ⌄</h2>
+      <div id="logWrap" style="display:none">
+        <div id="estadoCargaLog"></div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Detalle</th><th>IP</th></tr></thead>
+            <tbody id="logSeguridad"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="/common.js"></script>
+  <script>
+    let usuariosCache = [];
+    let meActual = null;
+
+    function badgeEstado(activo) {
+      return activo ? '<span class="badge verde">Activo</span>' : '<span class="badge rojo">Inactivo</span>';
+    }
+    function badgeTotp(habilitado) {
+      return habilitado ? '<span class="badge verde">Sí</span>' : '<span class="badge gris">No</span>';
+    }
+    function badgePermiso(u) {
+      if (!u.gestionar_usuarios) return '<span class="badge gris">No</span>';
+      return u.gestionar_usuarios_excepcion
+        ? '<span class="badge neutro">Sí (excepción)</span>'
+        : '<span class="badge gris">Sí (por rol)</span>';
+    }
+
+    function renderUsuarios() {
+      document.getElementById('usuarios').innerHTML = usuariosCache.map((u) => {
+        const esYo = meActual && u.id === meActual.id;
+        const acciones = esYo ? '<span class="small muted">(tú)</span>' : `
+          <div style="display:flex; gap:6px; flex-wrap:wrap">
+            <button class="btn small secundario" data-accion="permiso" data-id="${u.id}" data-otorgado="${u.gestionar_usuarios_excepcion ? 'null' : (u.gestionar_usuarios ? 'false' : 'true')}">
+              ${u.gestionar_usuarios_excepcion ? 'Quitar excepción' : (u.gestionar_usuarios ? 'Quitar permiso' : 'Dar permiso')}
+            </button>
+            ${u.activo
+              ? `<button class="btn small secundario" data-accion="desactivar" data-id="${u.id}">Desactivar</button>`
+              : `<button class="btn small secundario" data-accion="reactivar" data-id="${u.id}">Reactivar</button>`}
+            <button class="btn small secundario" data-accion="resetear-password" data-id="${u.id}">Resetear clave</button>
+            ${u.totp_habilitado ? `<button class="btn small secundario" data-accion="resetear-2fa" data-id="${u.id}">Resetear 2FA</button>` : ''}
+          </div>`;
+        const selectRol = esYo ? u.rol : `
+          <select data-accion="rol" data-id="${u.id}">
+            ${['equipo', 'director', 'admin'].map((r) => `<option value="${r}" ${r === u.rol ? 'selected' : ''}>${r}</option>`).join('')}
+          </select>`;
+        return `<tr style="${u.activo ? '' : 'opacity:0.55'}">
+          <td>${u.nombre}</td>
+          <td class="small muted">${u.email}</td>
+          <td>${selectRol}</td>
+          <td>${badgeEstado(u.activo)}</td>
+          <td>${badgeTotp(u.totp_habilitado)}</td>
+          <td>${badgePermiso(u)}</td>
+          <td>${acciones}</td>
+        </tr>`;
+      }).join('');
+
+      document.querySelectorAll('select[data-accion="rol"]').forEach((sel) => {
+        sel.addEventListener('change', async () => {
+          try {
+            await api(`/api/administracion/usuarios/${sel.dataset.id}/rol`, { method: 'PATCH', body: JSON.stringify({ rol: sel.value }) });
+            await cargar();
+          } catch (e) { alert(e.message); await cargar(); }
+        });
+      });
+      document.querySelectorAll('button[data-accion]').forEach((btn) => {
+        btn.addEventListener('click', () => manejarAccion(btn));
+      });
+    }
+
+    async function manejarAccion(btn) {
+      const { accion, id } = btn.dataset;
+      try {
+        if (accion === 'permiso') {
+          const valor = btn.dataset.otorgado === 'null' ? null : btn.dataset.otorgado === 'true';
+          await api(`/api/administracion/usuarios/${id}/permisos`, { method: 'PATCH', body: JSON.stringify({ permiso: 'gestionar_usuarios', otorgado: valor }) });
+        } else if (accion === 'desactivar') {
+          if (!confirm('¿Desactivar esta cuenta? La persona no podrá volver a entrar hasta que se reactive.')) return;
+          await api(`/api/administracion/usuarios/${id}/desactivar`, { method: 'POST' });
+        } else if (accion === 'reactivar') {
+          await api(`/api/administracion/usuarios/${id}/reactivar`, { method: 'POST' });
+        } else if (accion === 'resetear-password') {
+          if (!confirm('¿Resetear la contraseña de esta cuenta? Se generará una temporal y deberá cambiarla en el próximo ingreso.')) return;
+          const data = await api(`/api/administracion/usuarios/${id}/resetear-password`, { method: 'POST' });
+          alert(`Contraseña temporal (pásasela por un canal aparte, no queda guardada en ningún lado):\n\n${data.passwordTemporal}`);
+        } else if (accion === 'resetear-2fa') {
+          if (!confirm('¿Resetear el 2FA de esta cuenta? Deberá enrolarse de nuevo en el próximo ingreso.')) return;
+          await api(`/api/administracion/usuarios/${id}/resetear-2fa`, { method: 'POST' });
+        }
+        await cargar();
+      } catch (e) {
+        alert(e.message);
+      }
+    }
+
+    document.getElementById('crearForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const nombre = document.getElementById('nuevoNombre').value;
+      const email = document.getElementById('nuevoEmail').value;
+      const rol = document.getElementById('nuevoRol').value;
+      const aviso = document.getElementById('avisoCrear');
+      aviso.innerHTML = '';
+      try {
+        const data = await api('/api/administracion/usuarios', { method: 'POST', body: JSON.stringify({ nombre, email, rol }) });
+        aviso.innerHTML = `<div class="aviso-caja">Usuario creado. Contraseña temporal (pásasela por un canal aparte, no se vuelve a mostrar): <code>${data.passwordTemporal}</code></div>`;
+        document.getElementById('crearForm').reset();
+        await cargar();
+      } catch (e2) {
+        aviso.innerHTML = `<div class="aviso-caja">${e2.message}</div>`;
+      }
+    });
+
+    let logCargado = false;
+    document.getElementById('toggleLog').addEventListener('click', async () => {
+      const wrap = document.getElementById('logWrap');
+      wrap.style.display = wrap.style.display === 'none' ? 'block' : 'none';
+      if (wrap.style.display === 'block' && !logCargado) {
+        mostrarCargando('estadoCargaLog');
+        try {
+          const data = await api('/api/administracion/log-seguridad');
+          ocultarCargando('estadoCargaLog');
+          document.getElementById('logSeguridad').innerHTML = data.eventos.map((ev) => `
+            <tr>
+              <td class="small muted">${fmtFechaHora(ev.creado_en)}</td>
+              <td class="small">${ev.usuario_nombre || '—'}</td>
+              <td><span class="badge ${ev.accion.includes('fallido') || ev.accion === 'bloqueo' ? 'rojo' : 'gris'}">${ev.accion}</span></td>
+              <td class="small muted">${ev.detalle || '—'}</td>
+              <td class="small muted mono">${ev.ip || '—'}</td>
+            </tr>`).join('');
+          logCargado = true;
+        } catch (e) {
+          mostrarErrorCarga('estadoCargaLog', e.message);
+        }
+      }
+    });
+
+    async function cargar() {
+      meActual = await initNav('admin');
+      mostrarCargando('estadoCarga');
+      let d;
+      try {
+        d = await api('/api/administracion');
+      } catch (e) {
+        mostrarErrorCarga('estadoCarga', e.message);
+        return;
+      }
+      ocultarCargando('estadoCarga');
+      usuariosCache = d.usuarios;
+      renderUsuarios();
+      const u = d.umbrales;
+      const pend = (v) => (v === 'pendiente de definir' ? `<span class="warn">${v}</span>` : `<b>${v}</b>`);
+      document.getElementById('umbrales').innerHTML = `
+        <div class="fila"><span>Días para marcar ámbar (semáforo)</span>${pend(u.dias_ambar_semaforo + ' días')}</div>
+        <div class="fila"><span>Presupuesto mensual API Claude (alerta 80%)</span>${pend('$' + u.presupuesto_mensual_claude_usd + '.000')}</div>
+        <div class="fila"><span>Tope de tamaño del documento de bases</span>${pend(u.tope_paginas_documento + ' páginas')}</div>
+        <div class="fila"><span>Umbral de escalamiento al director</span>${pend(u.umbral_escalamiento_director)}</div>
+        <div class="fila"><span>Muestra aleatoria de segunda revisión</span>${pend(u.muestra_aleatoria_segunda_revision)}</div>
+      `;
+    }
+    cargar();
+  </script>
+</body>
+</html>

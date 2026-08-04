@@ -1,0 +1,258 @@
+:root {
+  --navy: #1E2761;
+  --navy-tint: #E9EDF5;
+  --navy-tint-border: #C7D2E5;
+  --gray-text: #6B7280;
+  --gray-border: #D1D5DB;
+  --gray-bg: #F9FAFB;
+  --amber-bg: #FBEEDD;
+  --amber-border: #D9A441;
+  --amber-text: #8A5A00;
+  --green-bg: #ECF7EF;
+  --green-border: #BFE3C8;
+  --green-text: #1F6B3A;
+  --red-bg: #FBEAEA;
+  --red-border: #E3AFAF;
+  --red-text: #8A2E2E;
+  --dark-text: #1F2937;
+}
+* { box-sizing: border-box; }
+/* Guía para el Diseño de interfaces web Institucional (Gob Digital, 2019),
+   sección "Excepciones en el manejo tipográfico": sitios no ministeriales
+   pueden usar otra tipografía, pero el cuerpo de texto no puede bajar de
+   16px, y el interlineado/interletrado se debe medir en relación a la
+   fuente base (em) para que escale si el usuario aumenta el tamaño de
+   letra — por eso la base queda en 16px/1.5 en vez de heredar el default
+   del navegador sin declararlo. */
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", Calibri, Arial, sans-serif;
+  background: #F3F4F8;
+  color: var(--dark-text);
+  font-size: 16px;
+  line-height: 1.5;
+}
+a { color: var(--navy); }
+
+.topnav {
+  background: var(--navy);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  height: 56px;
+  gap: 24px;
+}
+.topnav .brand { font-weight: 700; font-size: 15px; margin-right: 16px; }
+.topnav a.navlink {
+  color: rgba(255,255,255,0.75);
+  text-decoration: none;
+  font-size: 14px;
+  padding: 8px 12px;
+  border-radius: 999px;
+}
+.topnav a.navlink.active {
+  color: #fff;
+  background: rgba(255,255,255,0.15);
+  font-weight: 600;
+}
+.nav-buscar { margin-left: 8px; }
+.nav-buscar input {
+  background: rgba(255,255,255,0.12);
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 999px;
+  color: #fff;
+  font-size: 13px;
+  padding: 7px 14px;
+  width: 200px;
+}
+.nav-buscar input::placeholder { color: rgba(255,255,255,0.6); }
+.nav-buscar input:focus { outline: 2px solid #fff; background: rgba(255,255,255,0.2); }
+.topnav .spacer { flex: 1; }
+.topnav .acct { font-size: 13px; color: rgba(255,255,255,0.85); position: relative; cursor: pointer; }
+.topnav .acct-menu {
+  display: none;
+  position: absolute; right: 0; top: 32px; background: #fff; color: var(--dark-text);
+  border: 1px solid var(--gray-border); border-radius: 8px; min-width: 160px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12); overflow: hidden; z-index: 10;
+}
+.topnav .acct-menu.open { display: block; }
+.topnav .acct-menu button {
+  display: block; width: 100%; text-align: left; padding: 10px 14px; border: none;
+  background: none; font-size: 13px; cursor: pointer;
+}
+.topnav .acct-menu button:hover { background: var(--gray-bg); }
+
+.container { max-width: 1180px; margin: 0 auto; padding: 24px; }
+h1 { color: var(--navy); font-size: 26px; margin: 0 0 4px; }
+.subtitle { color: var(--gray-text); font-size: 15px; margin: 0 0 24px; font-style: italic; }
+
+.card {
+  background: #fff; border: 1px solid var(--gray-border); border-radius: 10px;
+  padding: 18px; margin-bottom: 16px;
+}
+.card h2 { font-size: 15px; color: var(--navy); margin: 0 0 12px; }
+
+/* Los badges/timestamps/meta quedan bajo 16px a propósito: la guía fija ese
+   mínimo para "cuerpos de texto (ejemplo, párrafos de textos)", no para
+   chips y etiquetas cortas, que trata como "objetos gráficos y componentes
+   UI" (misma distinción que hace para las reglas de contraste). El texto
+   que sí se lee como contenido (nombre del documento, detalle de auditoría,
+   resumen, notificaciones, filas de datos) se subió a 14-15px. */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700;
+  padding: 4px 10px; border-radius: 999px; text-transform: none;
+}
+.badge.verde { background: var(--green-bg); color: var(--green-text); border: 1px solid var(--green-border); }
+.badge.ambar { background: var(--amber-bg); color: var(--amber-text); border: 1px solid var(--amber-border); }
+.badge.rojo { background: var(--red-bg); color: var(--red-text); border: 1px solid var(--red-border); }
+.badge.neutro { background: var(--navy-tint); color: var(--navy); border: 1px solid var(--navy-tint-border); }
+.badge.gris { background: var(--gray-bg); color: var(--gray-text); border: 1px solid var(--gray-border); }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; color: var(--gray-text); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--gray-border); }
+td { padding: 10px; border-bottom: 1px solid #EEF0F4; vertical-align: middle; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover { background: var(--gray-bg); }
+
+.btn {
+  background: var(--navy); color: #fff; border: none; border-radius: 6px;
+  padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.btn:hover { opacity: 0.9; }
+.btn.secundario { background: #fff; color: var(--navy); border: 1px solid var(--navy-tint-border); }
+/* Antes 5px 10px: en filas de documentos con 3-4 acciones seguidas, ese
+   tamaño dejaba objetivos angostos y muy pegados entre sí (Ley de Fitts) —
+   se agranda el botón y se separa más abajo en .doc-actions. */
+.btn.small { padding: 8px 12px; font-size: 12.5px; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.login-wrap { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: linear-gradient(160deg,#1E2761,#3a4590); }
+.login-box { background: #fff; padding: 36px; border-radius: 12px; width: 340px; box-shadow: 0 20px 60px rgba(0,0,0,0.25); }
+.login-box h1 { font-size: 20px; text-align: center; }
+.login-box label { display: block; font-size: 12px; color: var(--gray-text); margin: 14px 0 4px; }
+.login-box input { width: 100%; padding: 9px 10px; border: 1px solid var(--gray-border); border-radius: 6px; font-size: 14px; }
+.login-box .btn { width: 100%; margin-top: 18px; }
+.login-error { color: var(--red-text); font-size: 12px; margin-top: 10px; text-align: center; }
+.login-hint { font-size: 11px; color: var(--gray-text); margin-top: 18px; text-align: center; line-height: 1.5; }
+
+.kanban { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; align-items: start; }
+.kanban .col h3 { font-size: 13px; color: var(--navy); margin: 0 0 10px; }
+.kanban .col-items { display: flex; flex-direction: column; gap: 10px; min-height: 40px; }
+.kcard {
+  background: #fff; border: 1px solid var(--gray-border); border-radius: 8px; padding: 10px 12px;
+  font-size: 12.5px; cursor: pointer;
+}
+/* El fondo (no el borde) cambia al pasar el mouse: un borde que se resalta
+   se lee fácil como "zona donde soltar algo" (drag target); estas tarjetas
+   no se arrastran, solo se abren al hacer clic — el hover debe leerse como
+   "esto es clickeable", no como "esto es un lugar para soltar". */
+.kcard:hover { background: var(--navy-tint); }
+.kcard .titulo { font-weight: 600; margin-bottom: 4px; }
+.kcard .meta { color: var(--gray-text); font-size: 11px; }
+.kcard .kcard-abrir { font-size: 11px; color: var(--navy); font-weight: 600; margin-top: 6px; opacity: 0; transition: opacity .1s; }
+.kcard:hover .kcard-abrir, .kcard:focus-visible .kcard-abrir { opacity: 1; }
+
+.stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.stat-box { background: #fff; border: 1px solid var(--gray-border); border-radius: 10px; padding: 16px; text-align: center; }
+.stat-box .n { font-size: 30px; font-weight: 700; color: var(--navy); }
+.stat-box .label { font-size: 12px; color: var(--gray-text); margin-top: 4px; }
+
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--gray-border); margin-bottom: 16px; }
+.tabs button {
+  background: none; border: none; padding: 10px 16px; font-size: 13px; font-weight: 600;
+  color: var(--gray-text); cursor: pointer; border-bottom: 2px solid transparent;
+}
+.tabs button.active { color: var(--navy); border-bottom-color: var(--navy); }
+
+.doc-row { border: 1px solid var(--gray-border); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+.doc-row.no_cumple, .doc-row.falta { background: var(--red-bg); border-color: var(--red-border); }
+.doc-row.cumple { background: var(--green-bg); border-color: var(--green-border); }
+.doc-row .doc-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; text-align: left; }
+.doc-row .doc-tipo { font-weight: 600; font-size: 15px; text-align: left; }
+.doc-row .doc-detalle { font-size: 14px; color: var(--gray-text); margin-top: 6px; font-style: italic; }
+.doc-row .doc-actions { margin-top: 8px; display: flex; gap: 12px; flex-wrap: wrap; }
+.doc-row textarea { width: 100%; margin-top: 8px; font-size: 12.5px; padding: 8px; border-radius: 6px; border: 1px solid var(--gray-border); font-family: inherit; resize: vertical; }
+.doc-row .doc-resumen { font-size: 14px; color: var(--gray-text); margin-bottom: 10px; }
+
+/* Checklist agregado (panel-equipo/panel-director) — acá sí es <details>
+   nativo por postulación, con un botón circular con flecha en vez del
+   triángulo del navegador (cerrado apunta a la derecha, abierto rota hacia
+   abajo). El listado dentro de una postulación (.doc-row, arriba) queda
+   siempre expandido — no hace falta acortarlo ahí. */
+.doc-grupo summary { list-style: none; text-align: left; }
+.doc-grupo summary::-webkit-details-marker { display: none; }
+.doc-grupo summary:focus-visible { outline: 2px solid var(--navy); outline-offset: 2px; }
+.doc-grupo summary::after {
+  content: '⌄';
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; flex-shrink: 0;
+  border-radius: 50%; background: var(--navy-tint); border: 1px solid var(--navy-tint-border);
+  color: var(--navy); font-size: 14px; font-weight: 700; line-height: 1;
+  transform: rotate(-90deg); transition: transform .15s;
+}
+.doc-grupo[open] summary::after { transform: rotate(0deg); }
+
+.notif-item { padding: 10px 0; border-bottom: 1px solid #EEF0F4; font-size: 14px; display:flex; justify-content:space-between; gap:10px;}
+.notif-item.no-leida { font-weight: 600; }
+.notif-item .msg { flex: 1; }
+.notif-item .cuando { color: var(--gray-text); font-size: 11px; white-space: nowrap; }
+
+.pill-list { display: flex; flex-direction: column; gap: 8px; }
+.pill-list .fila { display: flex; justify-content: space-between; font-size: 14px; border-bottom: 1px solid #EEF0F4; padding-bottom: 6px; }
+
+.warn { color: var(--amber-text); font-weight: 600; }
+.muted { color: var(--gray-text); }
+.small { font-size: 12px; }
+.mono { font-family: "Courier New", monospace; }
+
+.lookahead-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.lookahead-cols .col { background: var(--gray-bg); border-radius: 8px; padding: 10px 12px; min-height: 60px; }
+.lookahead-cols .col h4 { font-size: 12px; margin: 0 0 8px; color: var(--navy); }
+.lookahead-cols .item { font-size: 12px; padding: 6px 0; border-bottom: 1px solid #E5E7EB; }
+
+.table-scroll { overflow-x: auto; }
+
+/* Formularios simples dentro de una .card (ej. crear usuario en
+   Configuración) -- fila horizontal con envoltura, cada campo con su label
+   arriba, reutiliza el mismo look de inputs que .login-box pero sin quedar
+   atado a esa clase. */
+.form-inline { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+.form-inline .campo { display: flex; flex-direction: column; gap: 4px; }
+.form-inline label { font-size: 12px; color: var(--gray-text); }
+.form-inline input, .form-inline select {
+  padding: 8px 10px; border: 1px solid var(--gray-border); border-radius: 6px; font-size: 14px;
+}
+.aviso-caja {
+  background: var(--amber-bg); border: 1px solid var(--amber-border); color: var(--amber-text);
+  border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-top: 10px;
+}
+.aviso-caja code { background: rgba(255,255,255,0.6); padding: 2px 6px; border-radius: 4px; }
+
+/* Responsive: por debajo de ~900px las grillas fijas de 3-4 columnas se
+   apretaban sin ningún quiebre (kanban, stat-grid, lookahead) — pasan a
+   2 columnas en tablet y 1 en celular. */
+@media (max-width: 900px) {
+  .container { padding: 16px; }
+  .kanban { grid-template-columns: repeat(2, 1fr); }
+  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .lookahead-cols { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 600px) {
+  .container { padding: 12px; }
+  .kanban { grid-template-columns: 1fr; }
+  .stat-grid { grid-template-columns: 1fr; }
+  .lookahead-cols { grid-template-columns: 1fr; }
+  .topnav { gap: 12px; padding: 0 12px; overflow-x: auto; }
+  .doc-row .doc-actions { flex-direction: column; align-items: stretch; }
+  .doc-row .doc-actions .btn { width: 100%; }
+}
+
+/* Reporte imprimible del panel del director ("Exportar PDF" = imprimir del
+   navegador) — oculta nav, botones y controles interactivos, deja solo las
+   tarjetas de datos en una columna simple. */
+@media print {
+  .topnav, .no-print, .doc-actions, .subir-form, .resp-select, .hist-panel { display: none !important; }
+  .container { padding: 0; max-width: 100%; }
+  .card { border: none; box-shadow: none; break-inside: avoid; padding: 8px 0; }
+}

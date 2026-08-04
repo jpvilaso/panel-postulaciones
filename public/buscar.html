@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Buscar — Agente de Concursos</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="topnav" id="topnav"></div>
+  <div class="container">
+    <h1>Resultados de búsqueda</h1>
+    <p class="subtitle" id="subtitulo"></p>
+    <div id="estadoCarga"></div>
+    <div id="resultados"></div>
+  </div>
+
+  <script src="/common.js"></script>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const q = params.get('q') || '';
+
+    async function cargar() {
+      await initNav(null);
+      document.getElementById('subtitulo').textContent = q ? `Resultados para "${q}"` : 'Escribe algo en el buscador de arriba (mínimo 2 caracteres).';
+      const nav = document.getElementById('navBuscarInput');
+      if (nav) nav.value = q;
+      if (q.trim().length < 2) return;
+
+      mostrarCargando('estadoCarga');
+      let r;
+      try {
+        r = await api(`/api/buscar?q=${encodeURIComponent(q)}`);
+      } catch (e) {
+        mostrarErrorCarga('estadoCarga', e.message);
+        return;
+      }
+      ocultarCargando('estadoCarga');
+
+      const el = document.getElementById('resultados');
+      if (!r.postulaciones.length && !r.documentos.length) {
+        el.innerHTML = '<div class="card"><p class="small muted">Sin resultados.</p></div>';
+        return;
+      }
+      el.innerHTML = `
+        ${r.postulaciones.length ? `<div class="card">
+          <h2>Postulaciones (${r.postulaciones.length})</h2>
+          <div class="pill-list">
+            ${r.postulaciones.map(p => `<div class="fila">
+              <a href="/postulacion.html?id=${p.id}">${p.convocatoria_titulo}</a>
+              <span class="small muted">${p.convocatoria_fuente}${p.folio ? ' · folio ' + p.folio : ''}</span>
+            </div>`).join('')}
+          </div>
+        </div>` : ''}
+        ${r.documentos.length ? `<div class="card">
+          <h2>Documentos (${r.documentos.length})</h2>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>Documento</th><th>Postulación</th><th>Estado</th><th>Auditoría</th></tr></thead>
+              <tbody>
+                ${r.documentos.map(d => `<tr class="clickable" data-id="${d.postulacion_id}">
+                  <td>${d.tipo}</td>
+                  <td>${d.convocatoria_titulo}</td>
+                  <td>${estadoBadge(d.estado)}</td>
+                  <td>${auditoriaBadge(d.estado_auditoria)}</td>
+                </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>` : ''}
+      `;
+      el.querySelectorAll('tr[data-id]').forEach(tr => tr.addEventListener('click', () => window.location.href = `/postulacion.html?id=${tr.dataset.id}`));
+    }
+    cargar();
+  </script>
+</body>
+</html>

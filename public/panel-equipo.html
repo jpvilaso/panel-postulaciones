@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Mis postulaciones — Agente de Concursos</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="topnav" id="topnav"></div>
+  <div class="container">
+    <h1>Mis postulaciones</h1>
+    <p class="subtitle">Tablero por etapa — las tarjetas avanzan de columna solas a medida que cambia la etapa del pipeline, no se arrastran a mano</p>
+    <div id="estadoCarga"></div>
+
+    <div class="card">
+      <h2>Notificaciones</h2>
+      <div id="notifs"><span class="muted small">Cargando…</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Tablero por etapa</h2>
+      <div class="kanban" id="kanban"></div>
+    </div>
+
+    <div class="card">
+      <h2>Listado de documentos</h2>
+      <p class="small muted" style="margin-top:-6px">Todas las postulaciones, separadas — las que tienen algo pendiente van primero.</p>
+      <div id="checklistDocs"></div>
+    </div>
+  </div>
+
+  <script src="/common.js"></script>
+  <script>
+    const FASES = [
+      { key: 'nuevas', label: 'Nuevas · decidiendo', etapas: [1, 2, 3] },
+      { key: 'analizando', label: 'Analizando bases', etapas: [4] },
+      { key: 'preparando', label: 'Preparando', etapas: [5] },
+      { key: 'enviando', label: 'Enviando · seguimiento', etapas: [6, 7] },
+    ];
+
+    // tiempoRelativo y renderNotificaciones ahora viven en common.js (se
+    // comparten con panel-director.html, que ahora también recibe notifs).
+
+    async function cargar() {
+      await initNav('equipo');
+      mostrarCargando('estadoCarga');
+      let postulaciones, notificaciones, documentos;
+      try {
+        ({ postulaciones, notificaciones, documentos } = await api('/api/panel-equipo'));
+      } catch (e) {
+        mostrarErrorCarga('estadoCarga', e.message);
+        return;
+      }
+      ocultarCargando('estadoCarga');
+
+      renderNotificaciones('notifs', notificaciones);
+
+      const kanban = document.getElementById('kanban');
+      kanban.innerHTML = FASES.map((fase) => {
+        const items = postulaciones.filter((p) => fase.etapas.includes(p.etapa_actual));
+        return `
+          <div class="col">
+            <h3>${fase.label} (${items.length})</h3>
+            <div class="col-items">
+              ${items.map((p) => `
+                <div class="kcard" data-id="${p.id}">
+                  <div class="titulo">${p.convocatoria_titulo}</div>
+                  <div class="meta">${p.convocatoria_fuente} · ${p.responsable_nombre ? p.responsable_nombre : '⚠ sin asignar'}</div>
+                  <div class="meta">${p.proximo_hito_fecha ? 'Próx. hito: ' + fmtFecha(p.proximo_hito_fecha) : '⚠ sin definir'}</div>
+                  <div style="margin-top:6px">${badgeSemaforo(p.semaforo, p.semaforo_razon)} <span class="muted small">${p.avance}% avance</span></div>
+                  <div class="kcard-abrir">Ver detalle →</div>
+                </div>`).join('') || '<span class="muted small">Sin postulaciones en esta fase.</span>'}
+            </div>
+          </div>`;
+      }).join('');
+      kanban.querySelectorAll('.kcard').forEach((el) => {
+        el.addEventListener('click', () => window.location.href = `/postulacion.html?id=${el.dataset.id}`);
+      });
+
+      renderChecklistDocumentos('checklistDocs', documentos);
+    }
+    cargar();
+  </script>
+</body>
+</html>

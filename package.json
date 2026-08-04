@@ -1,0 +1,27 @@
+{
+  "name": "panel-postulaciones",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fase 3 del Agente de Concursos: login por rol, tracking de postulaciones, generacion de anexos y auditoria de documentos con IA.",
+  "type": "commonjs",
+  "main": "src/server.js",
+  "scripts": {
+    "seed": "node src/seed.js",
+    "start": "node src/server.js",
+    "dev": "node src/server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "docx": "^9.0.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^1.4.5-lts.1",
+    "otplib": "^12.0.1",
+    "qrcode": "^1.5.4"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^0.27.0"
+  }
+}

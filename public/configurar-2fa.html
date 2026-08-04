@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Agente de Concursos — Activar verificación en dos pasos</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-box" style="max-width:420px">
+      <h1>Activa la verificación en dos pasos</h1>
+
+      <div id="pasoQr">
+        <p class="small muted">
+          Escanea este código con una app de autenticación (Google Authenticator, Authy, 1Password, etc.)
+        </p>
+        <div id="estadoCarga"></div>
+        <img id="qrImg" alt="Código QR para 2FA" style="display:none; width:220px; height:220px; margin:10px auto; display:block" />
+        <p class="small muted">¿No puedes escanear? Ingresa esta clave manualmente en tu app:</p>
+        <code id="secretManual" style="display:block; word-break:break-all; background:#F5F6F8; padding:8px; border-radius:6px"></code>
+
+        <form id="confirmarForm" style="margin-top:16px">
+          <label for="codigo">Código de 6 dígitos de tu app</label>
+          <input type="text" id="codigo" name="codigo" inputmode="numeric" placeholder="123456" required />
+          <button class="btn" type="submit">Confirmar y activar</button>
+          <div class="login-error" id="err" style="display:none"></div>
+        </form>
+      </div>
+
+      <div id="pasoCodigos" style="display:none">
+        <p><b>Guarda estos códigos de respaldo.</b> Cada uno sirve una sola vez y son la única forma de entrar si pierdes tu teléfono. No se van a volver a mostrar.</p>
+        <div id="listaCodigos" style="font-family:monospace; background:#F5F6F8; padding:12px; border-radius:6px; line-height:1.8"></div>
+        <label style="display:flex; align-items:center; gap:8px; margin-top:14px; font-weight:normal">
+          <input type="checkbox" id="confirmoGuardado" />
+          Ya guardé mis códigos de respaldo en un lugar seguro.
+        </label>
+        <button class="btn" id="btnContinuar" style="margin-top:10px" disabled>Continuar</button>
+      </div>
+    </div>
+  </div>
+  <script src="/common.js"></script>
+  <script>
+    let destinoTrasConfirmar = '/panel-equipo.html';
+
+    async function iniciar() {
+      mostrarCargando('estadoCarga');
+      try {
+        const data = await api('/api/2fa/iniciar-enrolamiento', { method: 'POST' });
+        ocultarCargando('estadoCarga');
+        document.getElementById('qrImg').src = data.qr;
+        document.getElementById('qrImg').style.display = 'block';
+        document.getElementById('secretManual').textContent = data.secretManual;
+      } catch (e) {
+        mostrarErrorCarga('estadoCarga', e.message);
+      }
+    }
+    iniciar();
+
+    document.getElementById('confirmarForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const codigo = document.getElementById('codigo').value.trim();
+      const err = document.getElementById('err');
+      err.style.display = 'none';
+      try {
+        const data = await api('/api/2fa/confirmar', { method: 'POST', body: JSON.stringify({ codigo }) });
+        destinoTrasConfirmar = data.destino;
+        document.getElementById('pasoQr').style.display = 'none';
+        document.getElementById('pasoCodigos').style.display = 'block';
+        document.getElementById('listaCodigos').innerHTML = data.codigosRespaldo.map((c) => `<div>${c}</div>`).join('');
+      } catch (e2) {
+        err.textContent = e2.message;
+        err.style.display = 'block';
+      }
+    });
+
+    document.getElementById('confirmoGuardado').addEventListener('change', (e) => {
+      document.getElementById('btnContinuar').disabled = !e.target.checked;
+    });
+    document.getElementById('btnContinuar').addEventListener('click', () => {
+      window.location.href = destinoFinal(destinoTrasConfirmar);
+    });
+  </script>
+</body>
+</html>
