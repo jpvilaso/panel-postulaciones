@@ -81,13 +81,16 @@ function main() {
   );
 
   // ---- usuarios ----
-  // debe_cambiar_password = 0 acá a propósito: estas son cuentas demo ya
-  // "en régimen", no cuentas recién creadas por un admin -- el flujo de
-  // "cambia tu clave + activa 2FA en el primer ingreso" es para altas
-  // reales desde el panel de Configuración (Fase D), no para el seed.
+  // debe_cambiar_password = 1 a propósito: estas son las 5 cuentas reales
+  // del primer arranque en producción, así que se tratan igual que un alta
+  // hecha por un admin desde el panel de Configuración (Fase D) -- cada
+  // persona entra con la clave temporal de abajo, y el propio flujo de login
+  // la obliga a poner su clave definitiva y activar 2FA antes de usar el
+  // panel. password_actualizada_en queda NULL hasta que eso ocurra, mismo
+  // criterio que usa el alta manual (server.js, ruta de creación de usuario).
   const insertUsuario = db.prepare(`INSERT INTO usuarios
     (nombre, email, rol, password_hash, debe_cambiar_password, password_actualizada_en)
-    VALUES (?,?,?,?,0,datetime('now'))`);
+    VALUES (?,?,?,?,1,NULL)`);
   const CLAVE_DEMO = 'concursos2026';
   const hash = bcrypt.hashSync(CLAVE_DEMO, 10);
   const idRojas = insertUsuario.run('M. Rojas', 'mrojas@ceodoc.cl', 'equipo', hash).lastInsertRowid;
@@ -333,7 +336,7 @@ function main() {
   insertMeta.run(new Date().getFullYear(), 180000000, idDirectora);
 
   console.log('Seed completo.');
-  console.log(`Usuarios demo (clave para todos: "${CLAVE_DEMO}"):`);
+  console.log(`Usuarios reales, clave TEMPORAL para todos (deben cambiarla + activar 2FA en el primer ingreso): "${CLAVE_DEMO}"`);
   console.log('  Equipo:    mrojas@ceodoc.cl / jsoto@ceodoc.cl / pdiaz@ceodoc.cl');
   console.log('  Director:  directora@fundacion.cl');
   console.log('  Admin:     admin@fundacion.cl');
