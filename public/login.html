@@ -30,11 +30,6 @@
         <button class="btn" type="submit">Verificar</button>
         <div class="login-error" id="errTotp" style="display:none"></div>
       </form>
-      <div class="login-hint" id="demoHint">
-        Demo — usuarios de prueba (clave <code>concursos2026</code> para todos):<br>
-        mrojas@ceodoc.cl · jsoto@ceodoc.cl · pdiaz@ceodoc.cl (equipo)<br>
-        directora@fundacion.cl (director) · admin@fundacion.cl (admin)
-      </div>
     </div>
   </div>
   <script src="/common.js"></script>
@@ -54,7 +49,6 @@
         if (!r.ok) throw new Error(data.error || 'Error');
         if (data.requiereTotp) {
           document.getElementById('loginForm').style.display = 'none';
-          document.getElementById('demoHint').style.display = 'none';
           document.getElementById('totpForm').style.display = 'block';
           document.getElementById('codigo').focus();
           return;
