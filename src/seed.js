@@ -8,27 +8,103 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { abrirDb, inicializarSchema, DB_PATH } = require('./db');
 
-const MEMORIA_PATH = path.join(__dirname, '..', '..', 'agente-concursos', 'data', 'memoria.json');
-
-function cargarConvocatoriasReales() {
-  if (!fs.existsSync(MEMORIA_PATH)) return {};
-  const raw = JSON.parse(fs.readFileSync(MEMORIA_PATH, 'utf8'));
-  const porTitulo = {};
-  for (const [key, v] of Object.entries(raw)) {
-    porTitulo[v.data.titulo] = { key, ...v.data };
-  }
-  return porTitulo;
-}
-
-const TITULOS_ELEGIDOS = [
-  'SERVICIO DE ELABORACIÓN DE PLAN DE CULTURA',
-  'Escalamiento',
-  'RED GTT+ – REGIÓN DE O’HIGGINS – 1° CONVOCATORIA 2026, ETAPA DIAGNÓSTICO',
-  'Concurso de Composición Musical Luis Advis 2026',
-  'BIENES PÚBLICOS – REGIÓN DE LOS LAGOS – 2° CONVOCATORIA TURISMO NÁUTICO PATAGONIA - COSTA 2026',
-  'Concurso de ideas para el Pabellón de Chile en la 20 Bienal de Arquitectura de Venecia 2026',
-  'Convocatoria Iberorquestas Juveniles 2026: Galardón Joven Intérprete y Compositor',
-  'PAR – REGIÓN DE ATACAMA – 2° CONVOCATORIA INDUSTRIAS CREATIVAS 2026',
+// Antes este archivo leía las 8 convocatorias de ejemplo desde
+// ../../agente-concursos/data/memoria.json (una carpeta hermana). Eso
+// funcionaba en local, pero panel-postulaciones vive en su propio repo/
+// contenedor en producción (Railway) y esa carpeta no existe ahí -- el seed
+// corría igual pero omitía las 8 convocatorias en silencio. Se dejan acá
+// embebidas directamente (snapshot real tomado el 2026-08-04 del monitoreo
+// en producción de agente-concursos) para que el seed sea autosuficiente en
+// cualquier entorno.
+const CONVOCATORIAS_DEMO = [
+  {
+    key: 'Mercado Público::4086-36-L126',
+    fuente: 'Mercado Público',
+    titulo: 'SERVICIO DE ELABORACIÓN DE PLAN DE CULTURA',
+    link: 'https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idlicitacion=4086-36-L126',
+    fechaApertura: '2026-07-15',
+    fechaCierre: '2026-07-24',
+    monto: 7000000,
+    categoria: 'Organizaciones y consultorías políticas, demográficas, económicas, sociales y de administración pública / Desarrollo social, demográfico y comunitario / Cultura',
+    descripcion: 'SERVICIO DE ELABORACIÓN DE PLAN MUNICIPAL DE CULTURA SEGÚN BASES Y ANEXOS ADJUNTOS.',
+  },
+  {
+    key: 'CORFO::escalamiento-2026',
+    fuente: 'CORFO',
+    titulo: 'Escalamiento',
+    link: 'https://www.corfo.gob.cl/sites/cpp/convocatoria/escalamiento-2026/',
+    fechaApertura: '2026-06-17',
+    fechaCierre: '2026-07-27',
+    monto: null,
+    categoria: 'Todo Chile',
+    descripcion: 'Escalamiento es un cofinanciamiento para emprendimientos innovadores de alto potencial de crecimiento que ya superaron la etapa de creación y puesta en marcha, y que buscan acelerar su expansión comercial hacia nuevos mercados.',
+  },
+  {
+    key: 'CORFO::red-gtt-ohiggins-1-convocatoria-etapa-diagnostico-2026',
+    fuente: 'CORFO',
+    titulo: 'RED GTT+ – REGIÓN DE O’HIGGINS – 1° CONVOCATORIA 2026, ETAPA DIAGNÓSTICO',
+    link: 'https://www.corfo.gob.cl/sites/cpp/convocatoria/red-gtt-ohiggins-1-convocatoria-etapa-diagnostico-2026/',
+    fechaApertura: '2026-07-02',
+    fechaCierre: '2026-07-29',
+    monto: null,
+    categoria: "O'Higgins",
+    descripcion: 'Buscamos empresas con interés en participar junto a otras, para aumentar tu competitividad a través del Programa RED GTT para abordar brechas en ámbitos tecnológicos y de gestión, desarrollando actividades de construcción de capital social de Pymes silvoagropecuarias, a través de la organización y el trabajo en grupo de los productores, de acuerdo con las características productivas del grupo de empresas. Convocatoria abierta para la Región de O’Higgins.',
+  },
+  {
+    key: 'Cultura::concurso-de-composicion-musical-luis-advis-2026',
+    fuente: 'Cultura',
+    titulo: 'Concurso de Composición Musical Luis Advis 2026',
+    link: 'https://www.fondosdecultura.cl/concurso-de-composicion-musical-luis-advis-2026/',
+    fechaApertura: '2026-05-08',
+    fechaCierre: '2026-08-05',
+    monto: null,
+    categoria: 'Fondo de la Música, Música',
+    descripcion: null,
+  },
+  {
+    key: 'CORFO::bienes-publicos-los-lagos-2-convocatoria-turismo-nautico-patagonia-costa-2026',
+    fuente: 'CORFO',
+    titulo: 'BIENES PÚBLICOS – REGIÓN DE LOS LAGOS – 2° CONVOCATORIA TURISMO NÁUTICO PATAGONIA COSTA',
+    link: 'https://www.corfo.gob.cl/sites/cpp/convocatoria/bienes-publicos-los-lagos-2-convocatoria-turismo-nautico-patagonia-costa-2026/',
+    fechaApertura: '2026-07-23',
+    fechaCierre: '2026-08-10',
+    monto: null,
+    categoria: 'Los Lagos',
+    descripcion: 'Para abordar distintos desafíos asociados a la falta de información de aplicación productiva que permita tomar decisiones en ciertos sectores y recursos estratégicos, Corfo dispone del instrumento Bienes Públicos, cuyo objetivo es apoyar el desarrollo de bienes públicos para la competitividad, orientados a resolver fallas de mercado (de coordinación y/o asimetrías de información), con la finalidad de fortalecer la competitividad, diversificar la economía y/o aumentar la productividad.',
+  },
+  {
+    key: 'Cultura::concurso-de-ideas-para-el-pabellon-de-chile-en-la-20-bienal-de-arquitectura-de-venecia-2027',
+    fuente: 'Cultura',
+    titulo: 'Concurso de ideas para el Pabellón de Chile en la 20 Bienal de Arquitectura de Venecia 2027',
+    link: 'https://www.fondosdecultura.cl/concurso-de-ideas-para-el-pabellon-de-chile-en-la-20-bienal-de-arquitectura-de-venecia-2027/',
+    fechaApertura: '2026-07-23',
+    fechaCierre: '2026-09-01',
+    monto: null,
+    categoria: 'Arquitectura',
+    descripcion: null,
+  },
+  {
+    key: 'Cultura::iberorquestas-juveniles-joven-interprete-mejor-agrupacion',
+    fuente: 'Cultura',
+    titulo: 'Convocatoria Iberorquestas Juveniles 2026: Galardón Joven Intérprete y Galardón a Mejor Agrupación',
+    link: 'https://www.fondosdecultura.cl/iberorquestas-juveniles-joven-interprete-mejor-agrupacion/',
+    fechaApertura: '2026-05-11',
+    fechaCierre: '2026-10-30',
+    monto: null,
+    categoria: 'Fondo de la Música, Música',
+    descripcion: null,
+  },
+  {
+    key: 'CORFO::par-region-de-atacama-2-convocatoria-industrias-creativas-2026',
+    fuente: 'CORFO',
+    titulo: 'PAR – REGIÓN DE ATACAMA – 2° CONVOCATORIA INDUSTRIAS CREATIVAS 2026',
+    link: 'https://www.corfo.gob.cl/sites/cpp/convocatoria/par-region-de-atacama-2-convocatoria-industrias-creativas-2026/',
+    fechaApertura: '2026-02-09',
+    fechaCierre: '2026-12-31',
+    monto: null,
+    categoria: 'Atacama',
+    descripcion: 'El objetivo de esta línea es mejorar el potencial productivo y fortalecer la gestión de las empresas y/o emprendedores de un territorio, apoyando el desarrollo de sus competencias, capacidades y cofinanciando proyectos de inversión, que les permitan acceder a nuevas oportunidades de negocios y/o a mantener los existentes.',
+  },
 ];
 
 function main() {
@@ -42,29 +118,17 @@ function main() {
   const db = abrirDb();
   inicializarSchema(db);
 
-  const reales = cargarConvocatoriasReales();
-  const disponibles = Object.keys(reales);
-  console.log(`Convocatorias reales disponibles en memoria.json: ${disponibles.length}`);
-
   const insertConv = db.prepare(`INSERT INTO convocatorias
     (id, fuente, titulo, link, fecha_apertura, fecha_cierre, monto, categoria, descripcion, origen_dato)
     VALUES (?,?,?,?,?,?,?,?,?,?)`);
 
   const convocatoriasUsadas = [];
-  for (const titulo of TITULOS_ELEGIDOS) {
-    // match flexible por si difieren tildes/mayúsculas menores
-    const match = disponibles.find((t) => t.toLowerCase().startsWith(titulo.slice(0, 30).toLowerCase()))
-      || disponibles.find((t) => t.toLowerCase().includes(titulo.slice(0, 20).toLowerCase()));
-    if (!match) {
-      console.warn(`  (no encontrado en memoria.json, se omite): ${titulo}`);
-      continue;
-    }
-    const c = reales[match];
+  for (const c of CONVOCATORIAS_DEMO) {
     insertConv.run(c.key, c.fuente, c.titulo, c.link || null, c.fechaApertura || null,
       c.fechaCierre || null, c.monto || null, c.categoria || null, c.descripcion || null, 'real');
     convocatoriasUsadas.push(c);
   }
-  console.log(`Convocatorias reales cargadas: ${convocatoriasUsadas.length} de ${TITULOS_ELEGIDOS.length} buscadas`);
+  console.log(`Convocatorias reales cargadas: ${convocatoriasUsadas.length} de ${CONVOCATORIAS_DEMO.length}`);
 
   // La convocatoria FFOP 2026 (SERPAT) ya cerró antes de que existiera el
   // monitoreo actual (cerró el 6-mar-2026, el monitoreo parte el 25-jul-2026),
