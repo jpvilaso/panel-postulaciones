@@ -98,4 +98,103 @@ async function generarAnexo({ documento, postulacion, convocatoria }) {
   };
 }
 
-module.exports = { auditarDocumento, generarAnexo, tieneApiKeyReal };
+// ---- Punto 2: Extracción de requisitos / matriz de cumplimiento ----
+// Es el endpoint de mayor valor de los 5 (plan-implementacion.md, Parte 2):
+// analiza el PDF completo de las bases (sin RAG -- un solo documento entero
+// en el contexto, decisión ya tomada en el backlog) y devuelve una matriz
+// estructurada, no un resumen libre -- cada dato con su cita textual, para
+// que un humano la pueda verificar en vez de confiar ciegamente. El caso
+// real que motiva esto: a Fundación Sewell le costó $4.000.000 que "personal
+// a honorario" tuviera requisitos de documentación DISTINTOS al resto (un
+// contrato vigente + la última F29), algo que un checklist genérico no
+// habría capturado -- por eso el prompt pide explícitamente requisitos
+// "por tipo de gasto/categoría", no una lista plana.
+const PROMPT_SISTEMA_MATRIZ = `Eres un analista experto en bases de fondos concursables chilenos (RFP shredding). Lees un documento de bases completo y extraes una matriz de cumplimiento estructurada, nunca un resumen libre.
+
+Reglas estrictas:
+- Cada dato que extraigas debe venir acompañado de una cita textual breve (la frase exacta del documento de donde sale) y, si puedes identificarla, la sección o página de origen.
+- Nunca inventes un requisito, monto o fecha que no esté explícito en el texto. Si un campo no aparece en el documento, usa null.
+- Presta atención especial a requisitos que varíen "por tipo de gasto" o categoría (ej. personal a honorario, bienes, servicios de terceros) -- las bases suelen exigir documentación distinta según la categoría, y ese es el error más costoso si se pasa por alto.
+- Separa el checklist de documentos en dos grupos: "externo" (la organización debe reunirlo o solicitarlo -- certificados, contratos, cotizaciones) y "generado_ia" (un anexo o formulario propio del fondo que se llena con datos que ya existen en el sistema, ej. "Anexo N°1", "Anexo N°2").
+- Responde SOLO con el JSON, sin texto antes ni después, seguiendo exactamente este esquema:
+
+{
+  "fecha_cierre": "YYYY-MM-DD o null",
+  "monto_maximo": <número en CLP o null>,
+  "resumen": "1-2 líneas de qué es el fondo",
+  "topes_gasto_por_categoria": [ { "categoria": "...", "tope": "texto o número o null", "cita": "..." } ],
+  "checklist": [ { "tipo": "...", "origen": "externo|generado_ia", "aplica_a": "categoría o null si es general", "requisito": "texto exacto del requisito", "cita": "...", "pagina": <número o null> } ],
+  "criterios_evaluacion": [ { "criterio": "...", "ponderacion": "texto o null", "cita": "..." } ]
+}`;
+
+async function analizarBases({ textoPdf, nombreArchivo }) {
+  if (tieneApiKeyReal()) {
+    try {
+      const { texto, tokensEntrada, tokensSalida } = await llamarClaude(
+        PROMPT_SISTEMA_MATRIZ,
+        `Documento de bases (texto completo, extraído de "${nombreArchivo}"):\n\n${textoPdf}`,
+        6000
+      );
+      const match = texto.match(/\{[\s\S]*\}/);
+      if (!match) throw new Error('La respuesta no contenía JSON.');
+      const matriz = JSON.parse(match[0]);
+      return { matriz, modo: 'real', tokensEntrada, tokensSalida };
+    } catch (e) {
+      return {
+        matriz: null,
+        modo: 'error',
+        error: `No se pudo completar la extracción automática (${e.message}). Revisar las bases a mano.`,
+      };
+    }
+  }
+
+  // Modo demo (sin ANTHROPIC_API_KEY): heurística determinística sobre el
+  // texto real del PDF -- busca frases de obligación ("debe", "deberá", "es
+  // requisito") cerca de palabras de tipos de documento conocidos, y arma un
+  // checklist a partir de eso. No inventa nada que no esté en el texto, pero
+  // es mucho más burdo que la extracción real -- no reemplaza tener una API
+  // key real para dar por validada esta funcionalidad.
+  const TIPOS_CONOCIDOS = [
+    ['certificado de vigencia', 'Certificado de vigencia'],
+    ['rut', 'RUT de la organización'],
+    ['contrato de prestación de servicios', 'Contrato de prestación de servicios'],
+    ['f29', 'Declaración F29'],
+    ['declaración jurada', 'Declaración jurada'],
+    ['garantía', 'Garantía'],
+    ['estatutos', 'Estatutos de la organización'],
+    ['cédula de identidad', 'Cédula de identidad del representante legal'],
+    ['escritura', 'Escritura pública o acta de constitución'],
+    ['presupuesto', 'Presupuesto detallado'],
+  ];
+  const textoLower = textoPdf.toLowerCase();
+  const oraciones = textoPdf.split(/(?<=[.;])\s+/);
+  const checklist = [];
+  for (const [clave, tipo] of TIPOS_CONOCIDOS) {
+    const oracion = oraciones.find((o) => o.toLowerCase().includes(clave));
+    if (oracion) {
+      checklist.push({
+        tipo,
+        origen: 'externo',
+        aplica_a: null,
+        requisito: oracion.trim().slice(0, 300),
+        cita: oracion.trim().slice(0, 300),
+        pagina: null,
+      });
+    }
+  }
+  const fechaMatch = textoPdf.match(/(\d{1,2}\s+de\s+\w+\s+de\s+20\d{2}|\d{1,2}[\/-]\d{1,2}[\/-]20\d{2})/i);
+  return {
+    matriz: {
+      fecha_cierre: null,
+      monto_maximo: null,
+      resumen: `Modo demo (sin ANTHROPIC_API_KEY): checklist armado con una búsqueda de palabras clave sobre "${nombreArchivo}", no con lectura real del documento. Con una API key real, Claude extraería la matriz completa (fechas, montos, topes por categoría, criterios de evaluación) con citas.`,
+      topes_gasto_por_categoria: [],
+      checklist,
+      criterios_evaluacion: [],
+      _fechaDetectadaEnTexto: fechaMatch ? fechaMatch[0] : null,
+    },
+    modo: 'sintetico',
+  };
+}
+
+module.exports = { auditarDocumento, generarAnexo, analizarBases, tieneApiKeyReal };

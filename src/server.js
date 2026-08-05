@@ -10,6 +10,7 @@ const multer = require('multer');
 const { authenticator } = require('otplib');
 const qrcode = require('qrcode');
 const jwt = require('jsonwebtoken');
+const pdfParse = require('pdf-parse');
 const { abrirDb, all, get, run } = require('./db');
 const { calcularSemaforo, porcentajeAvance } = require('./semaforo');
 const ia = require('./ia');
@@ -67,6 +68,22 @@ const upload = multer({
     filename: (req, file, cb) => {
       const limpio = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
       cb(null, `doc-${req.params.id}-${Date.now()}-${limpio}`);
+    },
+  }),
+  limits: { fileSize: 20 * 1024 * 1024 },
+});
+
+// Multer aparte para el PDF de bases (Parte 2, "RFP shredding") -- mismo
+// directorio persistente, pero el nombre se arma con el id de la
+// POSTULACIÓN (req.params.id acá es postulacion_id, no documento_id como en
+// `upload` de arriba, así que conviene no compartir la instancia y evitar
+// confundir ambos significados de ":id" al leer el nombre del archivo.
+const uploadBases = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, UPLOADS_DIR),
+    filename: (req, file, cb) => {
+      const limpio = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      cb(null, `bases-${req.params.id}-${Date.now()}-${limpio}`);
     },
   }),
   limits: { fileSize: 20 * 1024 * 1024 },
@@ -221,6 +238,44 @@ function recalcularProximoHito(postulacionId) {
     ORDER BY fecha ASC LIMIT 1`, [postulacionId]);
   run(db, 'UPDATE postulaciones SET proximo_hito = ?, proximo_hito_fecha = ? WHERE id = ?',
     [proximo ? proximo.titulo : null, proximo ? proximo.fecha : null, postulacionId]);
+}
+
+// ---------- cronograma determinístico a partir de una matriz aprobada ----------
+// Parte 2 del plan de implementación pide esto explícitamente "sin llamada
+// adicional a IA": son reglas fijas sobre cuántos días de anticipación hacen
+// falta antes del cierre, según la complejidad ya detectada en la matriz
+// (cantidad de documentos externos a reunir, si hay topes de gasto por
+// categoría que revisar aparte). Si la matriz no trae una fecha_cierre
+// utilizable (extracción incompleta, o el campo quedó en null), no inventa
+// una -- devuelve un cronograma vacío y que alguien la complete a mano.
+function generarCronograma(matriz) {
+  if (!matriz.fecha_cierre || !/^\d{4}-\d{2}-\d{2}$/.test(matriz.fecha_cierre)) return [];
+  const cierre = new Date(`${matriz.fecha_cierre}T00:00:00`);
+  if (Number.isNaN(cierre.getTime())) return [];
+  const restar = (dias) => {
+    const f = new Date(cierre);
+    f.setDate(f.getDate() - dias);
+    return f.toISOString().slice(0, 10);
+  };
+  const checklist = matriz.checklist || [];
+  const nExternos = checklist.filter((d) => d.origen === 'externo').length;
+  const hayTopesPorCategoria = (matriz.topes_gasto_por_categoria || []).length > 0;
+
+  // Mínimo 7 días para reunir documentos externos; un día más de holgura
+  // por cada documento externo más allá de los primeros 3 (más trámites
+  // externos == más margen para imprevistos, ej. un certificado que demora).
+  const diasReunirDocumentos = Math.max(7, 7 + (nExternos - 3));
+
+  const hitos = [
+    { titulo: 'Reunir documentos externos', fecha: restar(diasReunirDocumentos) },
+    { titulo: 'Completar anexos y formularios propios del fondo', fecha: restar(5) },
+  ];
+  if (hayTopesPorCategoria) {
+    hitos.push({ titulo: 'Validar topes de gasto por categoría', fecha: restar(4) });
+  }
+  hitos.push({ titulo: 'Revisión final antes del cierre', fecha: restar(2) });
+  hitos.push({ titulo: 'Cierre de postulación', fecha: matriz.fecha_cierre });
+  return hitos;
 }
 
 // Notifica a alguien salvo que sea la misma persona que gatilló la acción
@@ -580,8 +635,16 @@ app.get('/api/postulaciones/:id', requireLogin, (req, res) => {
     WHERE co.postulacion_id = ? ORDER BY co.id ASC`, [p.id]);
   const hitos = all(db, 'SELECT * FROM hitos WHERE postulacion_id = ? ORDER BY fecha ASC', [p.id]);
   const camposPersonalizados = all(db, 'SELECT * FROM campos_personalizados WHERE postulacion_id = ? ORDER BY id', [p.id]);
+  // Matrices de cumplimiento (Parte 2, "RFP shredding") -- se manda el
+  // datos_json ya parseado para que el frontend no tenga que hacerlo, igual
+  // que con el resto de los campos de este endpoint.
+  const matrices = all(db, `
+    SELECT m.*, u.nombre AS creado_por_nombre FROM matrices_cumplimiento m
+    LEFT JOIN usuarios u ON u.id = m.creado_por
+    WHERE m.postulacion_id = ? ORDER BY m.id DESC`, [p.id])
+    .map((m) => ({ ...m, datos_json: JSON.parse(m.datos_json) }));
   const semaforo = calcularSemaforo(p, documentos);
-  res.json({ ...p, semaforo: semaforo.color, semaforo_razon: semaforo.razon, avance: porcentajeAvance(documentos), documentos, eventos, comentarios, hitos, camposPersonalizados });
+  res.json({ ...p, semaforo: semaforo.color, semaforo_razon: semaforo.razon, avance: porcentajeAvance(documentos), documentos, eventos, comentarios, hitos, camposPersonalizados, matrices });
 });
 
 // ---------- campos personalizados (clave→valor libre por postulación) ----------
@@ -639,6 +702,135 @@ app.delete('/api/hitos/:id', requireLogin, requireRol('equipo', 'director'), (re
   recalcularProximoHito(hito.postulacion_id);
   registrarLog(hito.postulacion_id, req.usuario.id, 'hito_eliminado', `"${hito.titulo}" (${hito.fecha}) eliminado.`);
   res.json({ ok: true });
+});
+
+// ---------- análisis de bases (Parte 2, "RFP shredding") ----------
+// Punto 2 de los 5 donde el pipeline llama a Claude (arquitectura-panel-control.md
+// sección 5). Sube el PDF completo de las bases, lo lee entero (sin RAG --
+// un solo documento en el contexto, decisión ya tomada en el backlog) y
+// guarda el resultado como un borrador en `matrices_cumplimiento` -- nunca
+// se confía ciegamente en la extracción: alguien del equipo tiene que
+// revisarla (y puede editarla) antes de aprobarla, momento en el que recién
+// se convierte en filas reales de `documentos` y `hitos`.
+app.post('/api/postulaciones/:id/analizar-bases', requireLogin, requireRol('equipo'), uploadBases.single('archivo'), async (req, res) => {
+  const postulacion = get(db, 'SELECT * FROM postulaciones WHERE id = ?', [req.params.id]);
+  if (!postulacion) return res.status(404).json({ error: 'No existe' });
+  if (!req.file) return res.status(400).json({ error: 'No se recibió ningún archivo.' });
+  const esPdf = req.file.mimetype === 'application/pdf' || req.file.originalname.toLowerCase().endsWith('.pdf');
+  if (!esPdf) return res.status(400).json({ error: 'El archivo de bases debe ser un PDF.' });
+
+  let textoPdf;
+  try {
+    const buffer = fs.readFileSync(req.file.path);
+    const datosPdf = await pdfParse(buffer);
+    textoPdf = datosPdf.text;
+  } catch (e) {
+    return res.status(400).json({ error: `No se pudo leer el PDF (${e.message}).` });
+  }
+  if (!textoPdf || !textoPdf.trim()) {
+    return res.status(400).json({ error: 'El PDF no tiene texto extraíble (¿es un escaneo sin OCR?). Revisar las bases a mano.' });
+  }
+
+  const resultado = await ia.analizarBases({ textoPdf, nombreArchivo: req.file.originalname });
+  run(db, `INSERT INTO uso_recursos (tipo, endpoint, postulacion_id, tokens_entrada, tokens_salida, modo, detalle)
+           VALUES ('llamada_ia','/api/ia/analizar-bases',?,?,?,?,?)`,
+    [postulacion.id, resultado.tokensEntrada || null, resultado.tokensSalida || null, resultado.modo, `Análisis de bases "${req.file.originalname}"`]);
+
+  if (resultado.modo === 'error') {
+    registrarLog(postulacion.id, req.usuario.id, 'analisis_bases_fallido', `"${req.file.originalname}": ${resultado.error}`);
+    return res.status(502).json({ error: resultado.error, modo: 'error' });
+  }
+
+  const r = run(db, `INSERT INTO matrices_cumplimiento (postulacion_id, archivo_nombre, datos_json, modo, tokens_entrada, tokens_salida, creado_por)
+           VALUES (?,?,?,?,?,?,?)`,
+    [postulacion.id, req.file.originalname, JSON.stringify(resultado.matriz), resultado.modo, resultado.tokensEntrada || null, resultado.tokensSalida || null, req.usuario.id]);
+  registrarLog(postulacion.id, req.usuario.id, 'analisis_bases_generado',
+    `Matriz de cumplimiento extraída de "${req.file.originalname}" (modo ${resultado.modo}) — pendiente de revisión.`);
+  res.json({ ok: true, id: r.lastInsertRowid, matriz: resultado.matriz, modo: resultado.modo });
+});
+
+app.get('/api/postulaciones/:id/matrices', requireLogin, (req, res) => {
+  const filas = all(db, `
+    SELECT m.id, m.archivo_nombre, m.estado, m.modo, m.editada, m.creado_en, m.aprobada_en,
+           u.nombre AS creado_por_nombre
+    FROM matrices_cumplimiento m
+    LEFT JOIN usuarios u ON u.id = m.creado_por
+    WHERE m.postulacion_id = ? ORDER BY m.id DESC`, [req.params.id]);
+  res.json(filas);
+});
+
+app.get('/api/matrices/:id', requireLogin, (req, res) => {
+  const matriz = get(db, 'SELECT * FROM matrices_cumplimiento WHERE id = ?', [req.params.id]);
+  if (!matriz) return res.status(404).json({ error: 'No existe' });
+  res.json({ ...matriz, datos_json: JSON.parse(matriz.datos_json) });
+});
+
+// Edición manual antes de aprobar -- ej. corregir una fecha mal leída, sacar
+// un ítem que no aplica, agregar uno que la IA se saltó. Solo mientras sigue
+// "pendiente_revision"; una vez aprobada, la matriz queda fija como registro
+// histórico de qué se aprobó.
+app.put('/api/matrices/:id', requireLogin, requireRol('equipo'), (req, res) => {
+  const matriz = get(db, 'SELECT * FROM matrices_cumplimiento WHERE id = ?', [req.params.id]);
+  if (!matriz) return res.status(404).json({ error: 'No existe' });
+  if (matriz.estado === 'aprobada') return res.status(400).json({ error: 'Esta matriz ya fue aprobada, no se puede editar.' });
+  if (!req.body || !req.body.datos_json) return res.status(400).json({ error: 'Falta datos_json.' });
+  run(db, 'UPDATE matrices_cumplimiento SET datos_json = ?, editada = 1 WHERE id = ?',
+    [JSON.stringify(req.body.datos_json), matriz.id]);
+  registrarLog(matriz.postulacion_id, req.usuario.id, 'matriz_editada',
+    `Matriz de cumplimiento (${matriz.archivo_nombre}) editada antes de aprobar.`);
+  res.json({ ok: true });
+});
+
+app.delete('/api/matrices/:id', requireLogin, requireRol('equipo'), (req, res) => {
+  const matriz = get(db, 'SELECT * FROM matrices_cumplimiento WHERE id = ?', [req.params.id]);
+  if (!matriz) return res.status(404).json({ error: 'No existe' });
+  if (matriz.estado === 'aprobada') return res.status(400).json({ error: 'No se puede eliminar una matriz ya aprobada.' });
+  run(db, 'DELETE FROM matrices_cumplimiento WHERE id = ?', [matriz.id]);
+  registrarLog(matriz.postulacion_id, req.usuario.id, 'matriz_descartada',
+    `Matriz de cumplimiento (${matriz.archivo_nombre}) descartada sin aprobar.`);
+  res.json({ ok: true });
+});
+
+// Al aprobar: genera las filas reales de `documentos` (checklist) y `hitos`
+// (cronograma determinístico, sin nueva llamada a IA -- ver generarCronograma
+// arriba). No duplica documentos que ya existan con el mismo tipo (mismo
+// criterio que /api/plantillas/:id/aplicar).
+app.post('/api/matrices/:id/aprobar', requireLogin, requireRol('equipo'), (req, res) => {
+  const matriz = get(db, 'SELECT * FROM matrices_cumplimiento WHERE id = ?', [req.params.id]);
+  if (!matriz) return res.status(404).json({ error: 'No existe' });
+  if (matriz.estado === 'aprobada') return res.status(400).json({ error: 'Esta matriz ya fue aprobada.' });
+  const postulacion = get(db, 'SELECT * FROM postulaciones WHERE id = ?', [matriz.postulacion_id]);
+  const datos = JSON.parse(matriz.datos_json);
+
+  const existentes = new Set(all(db, 'SELECT tipo FROM documentos WHERE postulacion_id = ?', [postulacion.id]).map((d) => d.tipo));
+  let documentosAgregados = 0;
+  for (const item of (datos.checklist || [])) {
+    if (!item.tipo) continue;
+    const tipo = item.aplica_a ? `${item.tipo} (${item.aplica_a})` : item.tipo;
+    if (existentes.has(tipo)) continue;
+    const requisitoConCita = item.cita
+      ? `${item.requisito || item.tipo} — cita: "${item.cita}"${item.pagina ? ` (pág. ${item.pagina})` : ''}`
+      : (item.requisito || item.tipo);
+    run(db, `INSERT INTO documentos (postulacion_id, tipo, estado, origen, requiere_firma_externa, estado_firma, estado_auditoria, requisito, sensible, fase)
+             VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      [postulacion.id, tipo, 'pendiente', item.origen === 'generado_ia' ? 'generado_ia' : 'externo', 0, 'no_aplica', 'sin_auditar', requisitoConCita, 0, 'postulacion']);
+    existentes.add(tipo);
+    documentosAgregados++;
+  }
+
+  const cronograma = generarCronograma(datos);
+  let hitosAgregados = 0;
+  for (const h of cronograma) {
+    run(db, 'INSERT INTO hitos (postulacion_id, titulo, fecha) VALUES (?,?,?)', [postulacion.id, h.titulo, h.fecha]);
+    hitosAgregados++;
+  }
+  if (hitosAgregados) recalcularProximoHito(postulacion.id);
+
+  run(db, `UPDATE matrices_cumplimiento SET estado = 'aprobada', aprobada_por = ?, aprobada_en = datetime('now') WHERE id = ?`,
+    [req.usuario.id, matriz.id]);
+  registrarLog(postulacion.id, req.usuario.id, 'matriz_aprobada',
+    `Matriz de cumplimiento (${matriz.archivo_nombre}) aprobada — ${documentosAgregados} documentos y ${hitosAgregados} hitos agregados al checklist.`);
+  res.json({ ok: true, documentos_agregados: documentosAgregados, hitos_agregados: hitosAgregados });
 });
 
 // Usuarios del equipo, para poblar selectores de "asignar responsable" —

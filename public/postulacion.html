@@ -239,6 +239,24 @@
       const docsConvenio = ordenarPorSeveridad(datos.documentos.filter(d => d.fase === 'convenio'));
 
       let html = '';
+      // Análisis de bases (Parte 2, "RFP shredding") — sube el PDF de bases
+      // y la IA propone la matriz de cumplimiento; solo el equipo la sube y
+      // la aprueba (mismo criterio de permisos que plantillas, más abajo).
+      // Va primero en la pestaña porque, si aún no hay checklist, es el
+      // punto de partida más rápido para armarlo.
+      if (yo.rol === 'equipo') {
+        const matrices = datos.matrices || [];
+        html += `<div class="card" id="matricesCard">
+          <h2>Análisis de bases (IA)</h2>
+          <p class="small muted" style="margin-top:-6px">Sube el PDF de las bases y la IA extrae una matriz de cumplimiento (fecha de cierre, montos, checklist con citas textuales) para revisar acá antes de aprobarla como el checklist oficial. Nunca se aprueba solo — siempre hay que revisarla primero.</p>
+          <form id="analizarBasesForm" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
+            <input type="file" id="basesArchivo" accept="application/pdf" required style="font-size:12px" />
+            <button type="submit" class="btn small secundario">Analizar bases (IA)</button>
+          </form>
+          <div id="analizarBasesEstado" class="small muted" style="margin-top:6px"></div>
+          ${matrices.length === 0 ? '<p class="small muted" style="margin-top:10px">Sin análisis de bases todavía.</p>' : matrices.map(matrizCard).join('')}
+        </div>`;
+      }
       // Guardar/aplicar plantillas es una acción del equipo (arma o reutiliza
       // el checklist), no del director (que solo revisa) — mismo criterio de
       // permisos que ya usan los demás botones de acción de documentos.
@@ -287,8 +305,131 @@
       document.getElementById('tab-documentos').innerHTML = html;
       wireDocActions();
       wireDocMeta();
-      if (yo.rol === 'equipo') wirePlantillas();
+      if (yo.rol === 'equipo') { wirePlantillas(); wireMatrices(); }
       if (document.getElementById('invitadosCard')) wireInvitados();
+    }
+
+    // Tarjeta de una matriz de cumplimiento (una por PDF de bases subido).
+    // Pendiente: cada ítem del checklist trae un checkbox para excluirlo
+    // antes de aprobar (ej. la IA detectó algo que no aplica), y la fecha de
+    // cierre queda editable (el campo más propenso a un error de lectura).
+    // Aprobada: solo lectura, como registro de qué se aprobó y cuándo.
+    function matrizCard(m) {
+      const d = m.datos_json || {};
+      const esPendiente = m.estado === 'pendiente_revision';
+      const badgeModo = m.modo === 'sintetico' ? '<span class="badge gris">modo demo, sin API real</span>' : '<span class="badge verde">IA real</span>';
+      const checklist = d.checklist || [];
+      const filasChecklist = checklist.map((item, i) => `
+        <div class="fila">
+          <span>
+            ${esPendiente ? `<input type="checkbox" class="chk-incluir" data-mid="${m.id}" data-idx="${i}" checked style="margin-right:6px" />` : ''}
+            <b>${item.tipo || '(sin tipo)'}</b>${item.aplica_a ? ` <span class="small muted">— ${item.aplica_a}</span>` : ''}
+            ${item.origen === 'generado_ia' ? '<span class="badge neutro">anexo propio</span>' : '<span class="badge gris">externo</span>'}
+          </span>
+          <span class="small muted" style="max-width:55%; text-align:right">${item.requisito || ''}${item.cita ? ` — cita: “${item.cita}”${item.pagina ? ` (pág. ${item.pagina})` : ''}` : ''}</span>
+        </div>`).join('');
+      const filasTopes = (d.topes_gasto_por_categoria || []).map((t) =>
+        `<div class="fila"><span>${t.categoria}</span><span class="small muted">${t.tope || '—'}${t.cita ? ` — “${t.cita}”` : ''}</span></div>`).join('');
+      const filasCriterios = (d.criterios_evaluacion || []).map((c) =>
+        `<div class="fila"><span>${c.criterio}</span><span class="small muted">${c.ponderacion || '—'}</span></div>`).join('');
+
+      return `
+        <div class="card" style="margin-top:10px">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <b>📄 ${m.archivo_nombre}</b>
+            <span>${badgeModo} <span class="badge ${esPendiente ? 'gris' : 'verde'}">${esPendiente ? 'pendiente de revisión' : 'aprobada'}</span></span>
+          </div>
+          ${d.resumen ? `<p class="small muted" style="margin:6px 0">${d.resumen}</p>` : ''}
+          <div class="small" style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:8px;">
+            <span><b>Cierre:</b> ${esPendiente
+              ? `<input type="date" class="fecha-cierre-input" data-mid="${m.id}" value="${d.fecha_cierre || ''}" style="font-size:12px; padding:2px" />`
+              : (d.fecha_cierre ? fmtFecha(d.fecha_cierre) : '—')}</span>
+            <span><b>Monto máximo:</b> ${d.monto_maximo ? fmtMoney(d.monto_maximo) : '—'}</span>
+          </div>
+          ${checklist.length ? `<div class="small muted"><b>Checklist propuesto (${checklist.length})</b></div>${filasChecklist}` : '<p class="small muted">Sin checklist detectado en el documento.</p>'}
+          ${filasTopes ? `<div class="small muted" style="margin-top:10px"><b>Topes de gasto por categoría</b></div>${filasTopes}` : ''}
+          ${filasCriterios ? `<div class="small muted" style="margin-top:10px"><b>Criterios de evaluación</b></div>${filasCriterios}` : ''}
+          ${esPendiente
+            ? `<div class="doc-actions" style="margin-top:12px">
+                <button class="btn small" data-aprobar-matriz="${m.id}">✓ Aprobar y generar checklist</button>
+                <button class="btn small secundario" data-descartar-matriz="${m.id}">Descartar</button>
+              </div>`
+            : `<p class="small muted" style="margin-top:8px">Aprobada por ${m.creado_por_nombre || '—'} el ${fmtFechaHora(m.aprobada_en)}.</p>`}
+        </div>`;
+    }
+
+    function wireMatrices() {
+      const form = document.getElementById('analizarBasesForm');
+      if (form) {
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const input = document.getElementById('basesArchivo');
+          const estado = document.getElementById('analizarBasesEstado');
+          if (!input.files[0]) return;
+          const fd = new FormData();
+          fd.append('archivo', input.files[0]);
+          const btn = form.querySelector('button');
+          btn.disabled = true; btn.textContent = 'Analizando…';
+          estado.textContent = 'Leyendo el PDF y extrayendo la matriz — puede tardar hasta un minuto en documentos largos…';
+          try {
+            const res = await fetch(`/api/postulaciones/${id}/analizar-bases`, { method: 'POST', body: fd });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Error al analizar las bases');
+            input.value = '';
+            estado.textContent = '';
+            await recargarDetalle();
+            document.querySelector('.tabs button[data-tab="documentos"]').click();
+          } catch (e2) {
+            estado.textContent = '';
+            alert(e2.message);
+          } finally {
+            btn.disabled = false; btn.textContent = 'Analizar bases (IA)';
+          }
+        });
+      }
+      document.querySelectorAll('#matricesCard [data-aprobar-matriz]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const mid = btn.dataset.aprobarMatriz;
+          const matriz = (datos.matrices || []).find((m) => String(m.id) === String(mid));
+          if (!matriz) return;
+          const ok = confirm('Esto agrega al checklist real los documentos que queden marcados, y crea el cronograma calculado en Hitos. ¿Continuar?');
+          if (!ok) return;
+          // Ediciones hechas en pantalla (ítems desmarcados, fecha de cierre
+          // corregida) se guardan antes de aprobar, para que la matriz
+          // aprobada quede como registro fiel de lo que realmente se usó.
+          const datosEditados = JSON.parse(JSON.stringify(matriz.datos_json));
+          const fechaInput = document.querySelector(`.fecha-cierre-input[data-mid="${mid}"]`);
+          if (fechaInput) datosEditados.fecha_cierre = fechaInput.value || null;
+          const excluidos = new Set();
+          document.querySelectorAll(`.chk-incluir[data-mid="${mid}"]`).forEach((chk) => {
+            if (!chk.checked) excluidos.add(Number(chk.dataset.idx));
+          });
+          datosEditados.checklist = (datosEditados.checklist || []).filter((_, i) => !excluidos.has(i));
+          btn.disabled = true; btn.textContent = 'Aprobando…';
+          try {
+            await api(`/api/matrices/${mid}`, { method: 'PUT', body: JSON.stringify({ datos_json: datosEditados }) });
+            const r = await api(`/api/matrices/${mid}/aprobar`, { method: 'POST' });
+            await recargarDetalle();
+            document.querySelector('.tabs button[data-tab="documentos"]').click();
+            alert(`Listo: ${r.documentos_agregados} documento(s) y ${r.hitos_agregados} hito(s) agregados al checklist.`);
+          } catch (e) {
+            alert(e.message);
+            btn.disabled = false; btn.textContent = '✓ Aprobar y generar checklist';
+          }
+        });
+      });
+      document.querySelectorAll('#matricesCard [data-descartar-matriz]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('¿Descartar esta matriz sin aprobarla? Se puede volver a subir el PDF después.')) return;
+          try {
+            await api(`/api/matrices/${btn.dataset.descartarMatriz}`, { method: 'DELETE' });
+            await recargarDetalle();
+            document.querySelector('.tabs button[data-tab="documentos"]').click();
+          } catch (e) {
+            alert(e.message);
+          }
+        });
+      });
     }
 
     // cargarListaInvitados() se llama varias veces (al abrir la pestaña, y

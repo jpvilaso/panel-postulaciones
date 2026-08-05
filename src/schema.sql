@@ -268,6 +268,32 @@ CREATE TABLE IF NOT EXISTS notificaciones (
   creado_en TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Matriz de cumplimiento extraída de un PDF de bases (Parte 2 del plan de
+-- implementación, "RFP shredding") -- punto 2 de los 5 donde el pipeline
+-- llama a Claude (arquitectura-panel-control.md sección 5). Vive separada
+-- de `documentos` a propósito: es un borrador que alguien del equipo tiene
+-- que revisar y aprobar antes de convertirse en el checklist oficial (nunca
+-- se confía ciegamente en la extracción) -- `datos_json` guarda la matriz
+-- completa (fechas, montos, topes por categoría, criterios de evaluación,
+-- checklist propuesto ya separado en externos vs. anexos propios del fondo,
+-- cada dato con su cita textual y página de origen). Al aprobar, genera las
+-- filas reales en `documentos` y `hitos` -- ver POST /api/matrices/:id/aprobar.
+CREATE TABLE IF NOT EXISTS matrices_cumplimiento (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  postulacion_id INTEGER NOT NULL REFERENCES postulaciones(id),
+  archivo_nombre TEXT,
+  estado TEXT NOT NULL DEFAULT 'pendiente_revision' CHECK (estado IN ('pendiente_revision', 'aprobada')),
+  datos_json TEXT NOT NULL,
+  editada INTEGER NOT NULL DEFAULT 0,
+  modo TEXT NOT NULL,
+  tokens_entrada INTEGER,
+  tokens_salida INTEGER,
+  creado_por INTEGER REFERENCES usuarios(id),
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  aprobada_por INTEGER REFERENCES usuarios(id),
+  aprobada_en TEXT
+);
+
 CREATE TABLE IF NOT EXISTS uso_recursos (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   tipo TEXT NOT NULL,
