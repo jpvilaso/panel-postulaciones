@@ -91,8 +91,14 @@ const RUTAS_PERMITIDAS_CON_CAMBIO_PENDIENTE = ['/api/logout', '/api/cambiar-pass
 // Rutas permitidas aunque la cuenta todavía no tenga el 2FA activado -- las
 // justas para completar el enrolamiento. Todo el resto del sistema queda
 // bloqueado hasta que exista un TOTP confirmado, igual que con el cambio de
-// contraseña de arriba.
-const RUTAS_PERMITIDAS_SIN_TOTP = ['/api/logout', '/api/me', '/api/2fa/iniciar-enrolamiento', '/api/2fa/confirmar'];
+// contraseña de arriba. Incluye /api/cambiar-password: una cuenta nueva
+// (creada por un admin o por el seed) tiene debe_cambiar_password=1 Y
+// totp_habilitado=0 a la vez -- el orden real del primer ingreso es
+// "cambia tu clave" y RECIÉN DESPUÉS "activa 2FA" (así lo hace
+// requireLoginRedirect, que manda primero a cambiar-password.html). Sin
+// esta excepción, el chequeo de TOTP bloqueaba la propia llamada que saca
+// a la cuenta del estado "debe cambiar password", dejándola sin salida.
+const RUTAS_PERMITIDAS_SIN_TOTP = ['/api/logout', '/api/me', '/api/cambiar-password', '/api/2fa/iniciar-enrolamiento', '/api/2fa/confirmar'];
 
 function registrarLogSeguridad(usuarioId, accion, detalle, ip) {
   run(db, 'INSERT INTO log_seguridad (usuario_id, accion, detalle, ip) VALUES (?,?,?,?)',
