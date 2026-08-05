@@ -318,20 +318,35 @@
       const d = m.datos_json || {};
       const esPendiente = m.estado === 'pendiente_revision';
       const badgeModo = m.modo === 'sintetico' ? '<span class="badge gris">modo demo, sin API real</span>' : '<span class="badge verde">IA real</span>';
+      // Filas en bloque (etiqueta arriba, cita/detalle abajo en su propia
+      // línea) en vez de reusar `.fila` (pensada para pares cortos tipo
+      // "Responsable: Juan") -- con textos largos + cita textual, la fila
+      // comprimida en una sola línea quedaba ilegible (etiqueta y valor
+      // pegados sin espacio, cita amontonada al lado).
       const checklist = d.checklist || [];
+      const filaEstilo = 'padding:8px 0; border-bottom:1px solid var(--gray-border, #EEF0F4);';
       const filasChecklist = checklist.map((item, i) => `
-        <div class="fila">
-          <span>
-            ${esPendiente ? `<input type="checkbox" class="chk-incluir" data-mid="${m.id}" data-idx="${i}" checked style="margin-right:6px" />` : ''}
-            <b>${item.tipo || '(sin tipo)'}</b>${item.aplica_a ? ` <span class="small muted">— ${item.aplica_a}</span>` : ''}
+        <div style="${filaEstilo}">
+          <div style="display:flex; align-items:flex-start; gap:8px; flex-wrap:wrap;">
+            ${esPendiente ? `<input type="checkbox" class="chk-incluir" data-mid="${m.id}" data-idx="${i}" checked style="margin-top:3px" />` : ''}
+            <b style="flex:1; min-width:160px;">${item.tipo || '(sin tipo)'}</b>
+            ${item.aplica_a ? `<span class="small muted">${item.aplica_a}</span>` : ''}
             ${item.origen === 'generado_ia' ? '<span class="badge neutro">anexo propio</span>' : '<span class="badge gris">externo</span>'}
-          </span>
-          <span class="small muted" style="max-width:55%; text-align:right">${item.requisito || ''}${item.cita ? ` — cita: “${item.cita}”${item.pagina ? ` (pág. ${item.pagina})` : ''}` : ''}</span>
+          </div>
+          ${item.requisito || item.cita ? `<div class="small muted" style="margin-top:4px; margin-left:${esPendiente ? '24px' : '0'};">
+            ${item.requisito || ''}${item.cita && item.cita !== item.requisito ? ` — cita: “${item.cita}”${item.pagina ? ` (pág. ${item.pagina})` : ''}` : ''}
+          </div>` : ''}
         </div>`).join('');
-      const filasTopes = (d.topes_gasto_por_categoria || []).map((t) =>
-        `<div class="fila"><span>${t.categoria}</span><span class="small muted">${t.tope || '—'}${t.cita ? ` — “${t.cita}”` : ''}</span></div>`).join('');
-      const filasCriterios = (d.criterios_evaluacion || []).map((c) =>
-        `<div class="fila"><span>${c.criterio}</span><span class="small muted">${c.ponderacion || '—'}</span></div>`).join('');
+      const filasTopes = (d.topes_gasto_por_categoria || []).map((t) => `
+        <div style="${filaEstilo}">
+          <b>${t.categoria}</b>
+          <div class="small muted" style="margin-top:4px;">${t.tope || '—'}${t.cita ? ` — “${t.cita}”` : ''}</div>
+        </div>`).join('');
+      const filasCriterios = (d.criterios_evaluacion || []).map((c) => `
+        <div style="${filaEstilo} display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap;">
+          <b style="flex:1; min-width:160px;">${c.criterio}</b>
+          <span class="small muted" style="white-space:nowrap;">${c.ponderacion || '—'}</span>
+        </div>`).join('');
 
       return `
         <div class="card" style="margin-top:10px">
