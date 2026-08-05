@@ -109,6 +109,14 @@ async function generarAnexo({ documento, postulacion, convocatoria }) {
 // contrato vigente + la última F29), algo que un checklist genérico no
 // habría capturado -- por eso el prompt pide explícitamente requisitos
 // "por tipo de gasto/categoría", no una lista plana.
+//
+// PROMPT_VERSION_MATRIZ (arquitectura-panel-control.md 14.4, "versionado de
+// prompts"): sube cada vez que cambie el texto de PROMPT_SISTEMA_MATRIZ.
+// Se guarda junto con cada matriz extraída (matrices_cumplimiento.prompt_version)
+// y en uso_recursos.detalle -- sin esto no hay forma de auditar después por
+// qué una extracción vieja salió distinta de una nueva, ni de revertir un
+// cambio de prompt que resultó peor que el anterior.
+const PROMPT_VERSION_MATRIZ = 'matriz-v1-2026-08-05';
 const PROMPT_SISTEMA_MATRIZ = `Eres un analista experto en bases de fondos concursables chilenos (RFP shredding). Lees un documento de bases completo y extraes una matriz de cumplimiento estructurada, nunca un resumen libre.
 
 Reglas estrictas:
@@ -138,12 +146,13 @@ async function analizarBases({ textoPdf, nombreArchivo }) {
       const match = texto.match(/\{[\s\S]*\}/);
       if (!match) throw new Error('La respuesta no contenía JSON.');
       const matriz = JSON.parse(match[0]);
-      return { matriz, modo: 'real', tokensEntrada, tokensSalida };
+      return { matriz, modo: 'real', tokensEntrada, tokensSalida, promptVersion: PROMPT_VERSION_MATRIZ };
     } catch (e) {
       return {
         matriz: null,
         modo: 'error',
         error: `No se pudo completar la extracción automática (${e.message}). Revisar las bases a mano.`,
+        promptVersion: PROMPT_VERSION_MATRIZ,
       };
     }
   }
@@ -194,7 +203,18 @@ async function analizarBases({ textoPdf, nombreArchivo }) {
       _fechaDetectadaEnTexto: fechaMatch ? fechaMatch[0] : null,
     },
     modo: 'sintetico',
+    promptVersion: PROMPT_VERSION_MATRIZ,
   };
 }
 
-module.exports = { auditarDocumento, generarAnexo, analizarBases, tieneApiKeyReal };
+// Tope de tamaño del PDF de bases (arquitectura-panel-control.md 13.2): si
+// el texto extraído excede esto, `server.js` ni siquiera llama a esta
+// función -- no truncar ni fragmentar el documento (perder un requisito por
+// no leerlo completo fue justo el error real de Fundación Sewell). Medido en
+// caracteres del texto ya extraído por pdf-parse, no en tamaño del archivo
+// PDF (un PDF con imágenes pesa mucho pero puede tener poco texto real, y
+// viceversa) -- ~180.000 caracteres son unas 60-70 páginas de bases típicas,
+// bastante por encima del caso real de FFOP 2026 (86.000 caracteres, 31 páginas).
+const MAX_CARACTERES_BASES = 180000;
+
+module.exports = { auditarDocumento, generarAnexo, analizarBases, tieneApiKeyReal, MAX_CARACTERES_BASES, PROMPT_VERSION_MATRIZ };

@@ -11,13 +11,18 @@ const { authenticator } = require('otplib');
 const qrcode = require('qrcode');
 const jwt = require('jsonwebtoken');
 const pdfParse = require('pdf-parse');
-const { abrirDb, all, get, run } = require('./db');
+const { abrirDb, aplicarMigraciones, all, get, run } = require('./db');
 const { calcularSemaforo, porcentajeAvance } = require('./semaforo');
 const ia = require('./ia');
 const { borradorADocx } = require('./docgen');
 const { validarLargo, passwordComprometida } = require('./passwordPolicy');
 
 const db = abrirDb();
+// Autorrepara el esquema al arrancar (crea tablas nuevas que falten +
+// agrega columnas nuevas a tablas existentes) -- nunca wipea nada, a
+// diferencia de `npm run seed`. Ver db.js:aplicarMigraciones() y la
+// bitácora del 2026-08-05 (incidente que motivó esto).
+aplicarMigraciones(db);
 const app = express();
 const PORT = process.env.PORT || 3300;
 
@@ -219,12 +224,68 @@ function documentosDeTodas() {
   return all(db, `
     SELECT d.*, p.id AS postulacion_id, c.titulo AS convocatoria_titulo,
            c.fuente AS convocatoria_fuente, p.folio, p.resultado,
+           p.responsable_id AS postulacion_responsable_id,
            ur.nombre AS responsable_nombre
     FROM documentos d
     JOIN postulaciones p ON p.id = d.postulacion_id
     JOIN convocatorias c ON c.id = p.convocatoria_id
     LEFT JOIN usuarios ur ON ur.id = d.responsable_id
     ORDER BY p.id, d.id`);
+}
+
+// Clasificación de documentos sensibles (Ley 21.719, arquitectura-panel-control.md
+// sección 11, entra en vigencia el 1-dic-2026). Estos tipos de documento
+// suelen traer datos personales de alguien identificable (RUT, firma,
+// situación tributaria/de salud) -- a diferencia de un certificado de
+// vigencia o un presupuesto, que son de la organización, no de una persona.
+// Heurística por palabra clave sobre tipo+requisito -- no es perfecta, pero
+// es mejor que no clasificar nada; el checklist ya deja ver/editar el
+// documento igual, esto solo decide quién puede VERLO.
+const PALABRAS_CLAVE_DOCUMENTO_SENSIBLE = [
+  'f29', 'declaración jurada', 'contrato de prestación de servicios', 'contrato de trabajo',
+  'cédula de identidad', 'certificado médico', 'certificado de antecedentes',
+  'declaración de renta', 'liquidación de sueldo', 'certificado de cotizaciones',
+];
+function pareceDocumentoSensible(tipo, requisito) {
+  const texto = `${tipo || ''} ${requisito || ''}`.toLowerCase();
+  return PALABRAS_CLAVE_DOCUMENTO_SENSIBLE.some((clave) => texto.includes(clave));
+}
+
+// Un documento marcado sensible solo lo puede ver el responsable asignado
+// (a ese documento puntual, o a toda la postulación) y el director/admin --
+// no "todo el equipo" por defecto, que es la regla para cualquier otro
+// documento (sección 11). No se borra la fila para el resto del equipo
+// (seguiría faltando algo del checklist sin ninguna explicación) -- se
+// oculta el contenido y queda marcada como acceso restringido.
+function ocultarSiSensible(doc, usuario, responsablePostulacionId = doc.postulacion_responsable_id) {
+  if (!doc.sensible) return doc;
+  if (usuario.rol === 'director' || usuario.rol === 'admin') return doc;
+  const esResponsable = usuario.id === doc.responsable_id || usuario.id === responsablePostulacionId;
+  if (esResponsable) return doc;
+  return {
+    ...doc,
+    archivo_url: null,
+    requisito: null,
+    contenido_generado: null,
+    detalle_auditoria: null,
+    acceso_restringido: true,
+  };
+}
+
+// Segunda revisión ciega (arquitectura-panel-control.md 13.3): quien hace la
+// segunda revisión tiene que verla como si fuera la primera -- si le
+// mostramos que ya hubo una aprobación previa, tiende a confiar en que la
+// primera persona ya revisó bien y termina aprobando sin re-examinar de
+// cero ("rubber-stamping", el four-eyes principle documentado en banca y
+// auditoría). Por eso se le esconde el rastro de la primera revisión a
+// cualquiera que no sea quien la hizo o alguien con rol de supervisión
+// (director/admin, que sí necesita ver el cuadro completo).
+function serializarMatrizParaUsuario(m, usuario) {
+  const esPrivilegiado = usuario.rol === 'director' || usuario.rol === 'admin' || usuario.id === m.primera_revision_por;
+  if (esPrivilegiado) return m;
+  const { primera_revision_por, primera_revision_en, motivo_segunda_revision,
+    campos_editados_al_aprobar, segundos_hasta_revision, ...resto } = m;
+  return resto;
 }
 
 // Recalcula postulaciones.proximo_hito/proximo_hito_fecha a partir de la
@@ -623,7 +684,8 @@ app.get('/api/postulaciones/:id', requireLogin, (req, res) => {
     SELECT d.*, ur.nombre AS responsable_nombre
     FROM documentos d
     LEFT JOIN usuarios ur ON ur.id = d.responsable_id
-    WHERE d.postulacion_id = ? ORDER BY d.id`, [p.id]);
+    WHERE d.postulacion_id = ? ORDER BY d.id`, [p.id])
+    .map((d) => ocultarSiSensible(d, req.usuario, p.responsable_id));
   const eventos = all(db, `
     SELECT le.*, u.nombre AS usuario_nombre FROM log_eventos le
     LEFT JOIN usuarios u ON u.id = le.usuario_id
@@ -642,7 +704,7 @@ app.get('/api/postulaciones/:id', requireLogin, (req, res) => {
     SELECT m.*, u.nombre AS creado_por_nombre FROM matrices_cumplimiento m
     LEFT JOIN usuarios u ON u.id = m.creado_por
     WHERE m.postulacion_id = ? ORDER BY m.id DESC`, [p.id])
-    .map((m) => ({ ...m, datos_json: JSON.parse(m.datos_json) }));
+    .map((m) => serializarMatrizParaUsuario({ ...m, datos_json: JSON.parse(m.datos_json) }, req.usuario));
   const semaforo = calcularSemaforo(p, documentos);
   res.json({ ...p, semaforo: semaforo.color, semaforo_razon: semaforo.razon, avance: porcentajeAvance(documentos), documentos, eventos, comentarios, hitos, camposPersonalizados, matrices });
 });
@@ -704,6 +766,27 @@ app.delete('/api/hitos/:id', requireLogin, requireRol('equipo', 'director'), (re
   res.json({ ok: true });
 });
 
+// Rate-limiting simple en memoria para /api/postulaciones/:id/analizar-bases
+// (arquitectura-panel-control.md 14.1) -- el único control de costos que
+// había antes era la alerta del 80% del presupuesto (uso_recursos), que
+// avisa DESPUÉS de gastar. Esto pone un tope ANTES de llamar a la API paga:
+// cuántos análisis puede pedir una misma persona por ventana de tiempo. En
+// memoria (no en la base) a propósito -- es correcto que se resetee si el
+// proceso se reinicia, no hace falta persistirlo entre deploys.
+const LIMITE_ANALIZAR_BASES = { ventanaMs: 5 * 60 * 1000, maxLlamadas: 5 };
+const llamadasAnalizarBasesPorUsuario = new Map();
+function excedeLimiteAnalizarBases(usuarioId) {
+  const ahora = Date.now();
+  const historial = (llamadasAnalizarBasesPorUsuario.get(usuarioId) || []).filter((t) => ahora - t < LIMITE_ANALIZAR_BASES.ventanaMs);
+  if (historial.length >= LIMITE_ANALIZAR_BASES.maxLlamadas) {
+    llamadasAnalizarBasesPorUsuario.set(usuarioId, historial);
+    return true;
+  }
+  historial.push(ahora);
+  llamadasAnalizarBasesPorUsuario.set(usuarioId, historial);
+  return false;
+}
+
 // ---------- análisis de bases (Parte 2, "RFP shredding") ----------
 // Punto 2 de los 5 donde el pipeline llama a Claude (arquitectura-panel-control.md
 // sección 5). Sube el PDF completo de las bases, lo lee entero (sin RAG --
@@ -719,6 +802,12 @@ app.post('/api/postulaciones/:id/analizar-bases', requireLogin, requireRol('equi
   const esPdf = req.file.mimetype === 'application/pdf' || req.file.originalname.toLowerCase().endsWith('.pdf');
   if (!esPdf) return res.status(400).json({ error: 'El archivo de bases debe ser un PDF.' });
 
+  if (excedeLimiteAnalizarBases(req.usuario.id)) {
+    return res.status(429).json({
+      error: `Demasiados análisis seguidos (máximo ${LIMITE_ANALIZAR_BASES.maxLlamadas} cada ${Math.round(LIMITE_ANALIZAR_BASES.ventanaMs / 60000)} minutos). Espera un momento y vuelve a intentar.`,
+    });
+  }
+
   let textoPdf;
   try {
     const buffer = fs.readFileSync(req.file.path);
@@ -731,19 +820,44 @@ app.post('/api/postulaciones/:id/analizar-bases', requireLogin, requireRol('equi
     return res.status(400).json({ error: 'El PDF no tiene texto extraíble (¿es un escaneo sin OCR?). Revisar las bases a mano.' });
   }
 
+  // Tope de tamaño (arquitectura-panel-control.md 13.2): si el texto
+  // extraído excede el tope, no se llama a la IA en absoluto -- ni se
+  // trunca ni se fragmenta (perder un requisito por no leer el documento
+  // completo fue justo el error real de Fundación Sewell). Queda para
+  // revisión manual completa, con aviso al equipo, nunca en silencio.
+  if (textoPdf.length > ia.MAX_CARACTERES_BASES) {
+    registrarLog(postulacion.id, req.usuario.id, 'analisis_bases_muy_grande',
+      `"${req.file.originalname}" tiene ${textoPdf.length.toLocaleString('es-CL')} caracteres de texto, por sobre el tope de ${ia.MAX_CARACTERES_BASES.toLocaleString('es-CL')} -- requiere revisión manual completa, no se analizó automáticamente.`);
+    notificarSiCorresponde(postulacion.responsable_id, req.usuario.id, postulacion.id, 'analisis_bases_muy_grande',
+      `"${req.file.originalname}" es demasiado grande para el análisis automático de bases -- revisar a mano.`);
+    return res.status(413).json({
+      error: `El documento es demasiado grande para analizarlo automáticamente (${textoPdf.length.toLocaleString('es-CL')} caracteres de texto extraído, tope ${ia.MAX_CARACTERES_BASES.toLocaleString('es-CL')}). Requiere revisión manual completa -- se avisó al equipo.`,
+      modo: 'requiere_revision_manual',
+    });
+  }
+
   const resultado = await ia.analizarBases({ textoPdf, nombreArchivo: req.file.originalname });
   run(db, `INSERT INTO uso_recursos (tipo, endpoint, postulacion_id, tokens_entrada, tokens_salida, modo, detalle)
            VALUES ('llamada_ia','/api/ia/analizar-bases',?,?,?,?,?)`,
-    [postulacion.id, resultado.tokensEntrada || null, resultado.tokensSalida || null, resultado.modo, `Análisis de bases "${req.file.originalname}"`]);
+    [postulacion.id, resultado.tokensEntrada || null, resultado.tokensSalida || null, resultado.modo,
+      `Análisis de bases "${req.file.originalname}" (prompt ${resultado.promptVersion || 'n/a'})`]);
 
   if (resultado.modo === 'error') {
     registrarLog(postulacion.id, req.usuario.id, 'analisis_bases_fallido', `"${req.file.originalname}": ${resultado.error}`);
     return res.status(502).json({ error: resultado.error, modo: 'error' });
   }
 
-  const r = run(db, `INSERT INTO matrices_cumplimiento (postulacion_id, archivo_nombre, datos_json, modo, tokens_entrada, tokens_salida, creado_por)
-           VALUES (?,?,?,?,?,?,?)`,
-    [postulacion.id, req.file.originalname, JSON.stringify(resultado.matriz), resultado.modo, resultado.tokensEntrada || null, resultado.tokensSalida || null, req.usuario.id]);
+  // datos_json_original queda como snapshot inmutable de lo que salió de la
+  // IA -- datos_json es la copia "de trabajo" que se puede editar antes de
+  // aprobar (PUT /api/matrices/:id). La diferencia entre ambas es lo que
+  // usa el detector de validación complaciente para contar cuántos campos
+  // se editaron antes de aprobar (sección 4.3).
+  const datosJsonTexto = JSON.stringify(resultado.matriz);
+  const r = run(db, `INSERT INTO matrices_cumplimiento
+           (postulacion_id, archivo_nombre, datos_json, datos_json_original, modo, prompt_version, tokens_entrada, tokens_salida, creado_por)
+           VALUES (?,?,?,?,?,?,?,?,?)`,
+    [postulacion.id, req.file.originalname, datosJsonTexto, datosJsonTexto, resultado.modo, resultado.promptVersion || null,
+      resultado.tokensEntrada || null, resultado.tokensSalida || null, req.usuario.id]);
   registrarLog(postulacion.id, req.usuario.id, 'analisis_bases_generado',
     `Matriz de cumplimiento extraída de "${req.file.originalname}" (modo ${resultado.modo}) — pendiente de revisión.`);
   res.json({ ok: true, id: r.lastInsertRowid, matriz: resultado.matriz, modo: resultado.modo });
@@ -759,10 +873,66 @@ app.get('/api/postulaciones/:id/matrices', requireLogin, (req, res) => {
   res.json(filas);
 });
 
+// Comparación determinística campo por campo entre la matriz vigente
+// (aprobada) y una nueva extracción -- SIN otra llamada a IA
+// (arquitectura-panel-control.md 13.4). Simplificación consciente frente al
+// diseño original: la sección 4.3 dispara esto al subir un documento de
+// tipo "aclaración"/"Resolución Exenta"; acá todavía no existe un flujo
+// genérico para subir ese tipo de documento suelto, así que el gatillo real
+// es re-analizar el mismo PDF de bases (o una versión nueva) cuando la
+// postulación ya tiene una matriz aprobada -- mismo propósito (detectar que
+// las bases cambiaron sin que nadie lo note), gatillo más simple.
+function compararMatrices(vigente, nueva) {
+  const cambios = {};
+  for (const campo of ['fecha_cierre', 'monto_maximo', 'resumen']) {
+    if (JSON.stringify(vigente[campo]) !== JSON.stringify(nueva[campo])) {
+      cambios[campo] = { antes: vigente[campo] ?? null, despues: nueva[campo] ?? null };
+    }
+  }
+  const claveItem = (it) => `${it.tipo}::${it.aplica_a || ''}`;
+  const checklistVigente = new Map((vigente.checklist || []).map((it) => [claveItem(it), it]));
+  const checklistNueva = new Map((nueva.checklist || []).map((it) => [claveItem(it), it]));
+  const agregados = [...checklistNueva.keys()].filter((k) => !checklistVigente.has(k)).map((k) => checklistNueva.get(k));
+  const quitados = [...checklistVigente.keys()].filter((k) => !checklistNueva.has(k)).map((k) => checklistVigente.get(k));
+  const modificados = [...checklistNueva.keys()]
+    .filter((k) => checklistVigente.has(k) && JSON.stringify(checklistVigente.get(k)) !== JSON.stringify(checklistNueva.get(k)))
+    .map((k) => ({ antes: checklistVigente.get(k), despues: checklistNueva.get(k) }));
+  return {
+    cambiosGenerales: cambios,
+    checklistAgregado: agregados,
+    checklistQuitado: quitados,
+    checklistModificado: modificados,
+    hayCambios: Object.keys(cambios).length > 0 || agregados.length > 0 || quitados.length > 0 || modificados.length > 0,
+  };
+}
+
+// Si esta matriz está pendiente y la postulación ya tiene una matriz
+// aprobada (vigente) distinta, esto es una revisión de bases modificadas,
+// no un primer análisis -- devuelve la comparación campo por campo para que
+// la persona vea qué cambió antes de decidir si aprueba (reemplaza) o
+// descarta (se queda con la vigente).
+app.get('/api/matrices/:id/comparar', requireLogin, (req, res) => {
+  const matriz = get(db, 'SELECT * FROM matrices_cumplimiento WHERE id = ?', [req.params.id]);
+  if (!matriz) return res.status(404).json({ error: 'No existe' });
+  const vigente = get(db, `
+    SELECT * FROM matrices_cumplimiento
+    WHERE postulacion_id = ? AND estado = 'aprobada' AND id != ?
+    ORDER BY aprobada_en DESC LIMIT 1`, [matriz.postulacion_id, matriz.id]);
+  if (!vigente) return res.json({ hayVigente: false });
+  const comparacion = compararMatrices(JSON.parse(vigente.datos_json), JSON.parse(matriz.datos_json));
+  res.json({
+    hayVigente: true,
+    vigenteId: vigente.id,
+    vigenteArchivo: vigente.archivo_nombre,
+    vigenteAprobadaEn: vigente.aprobada_en,
+    ...comparacion,
+  });
+});
+
 app.get('/api/matrices/:id', requireLogin, (req, res) => {
   const matriz = get(db, 'SELECT * FROM matrices_cumplimiento WHERE id = ?', [req.params.id]);
   if (!matriz) return res.status(404).json({ error: 'No existe' });
-  res.json({ ...matriz, datos_json: JSON.parse(matriz.datos_json) });
+  res.json(serializarMatrizParaUsuario({ ...matriz, datos_json: JSON.parse(matriz.datos_json) }, req.usuario));
 });
 
 // Edición manual antes de aprobar -- ej. corregir una fecha mal leída, sacar
@@ -773,6 +943,13 @@ app.put('/api/matrices/:id', requireLogin, requireRol('equipo'), (req, res) => {
   const matriz = get(db, 'SELECT * FROM matrices_cumplimiento WHERE id = ?', [req.params.id]);
   if (!matriz) return res.status(404).json({ error: 'No existe' });
   if (matriz.estado === 'aprobada') return res.status(400).json({ error: 'Esta matriz ya fue aprobada, no se puede editar.' });
+  // Quien ya hizo su revisión y quedó esperando la segunda no puede seguir
+  // editando después (ya "entregó" su revisión) -- pero la persona que va a
+  // hacer la segunda revisión ciega sí puede editar antes de decidir, igual
+  // que en cualquier primera revisión.
+  if (matriz.primera_revision_por === req.usuario.id) {
+    return res.status(400).json({ error: 'Ya registraste tu revisión de esta matriz -- no se puede seguir editando.' });
+  }
   if (!req.body || !req.body.datos_json) return res.status(400).json({ error: 'Falta datos_json.' });
   run(db, 'UPDATE matrices_cumplimiento SET datos_json = ?, editada = 1 WHERE id = ?',
     [JSON.stringify(req.body.datos_json), matriz.id]);
@@ -785,21 +962,40 @@ app.delete('/api/matrices/:id', requireLogin, requireRol('equipo'), (req, res) =
   const matriz = get(db, 'SELECT * FROM matrices_cumplimiento WHERE id = ?', [req.params.id]);
   if (!matriz) return res.status(404).json({ error: 'No existe' });
   if (matriz.estado === 'aprobada') return res.status(400).json({ error: 'No se puede eliminar una matriz ya aprobada.' });
+
+  // Segunda revisión ciega que rechaza: no se borra la extracción (sigue
+  // siendo un dato real, solo alguien no confirmó la primera revisión) --
+  // vuelve a quedar pendiente de revisión desde cero, sin arrastrar quién
+  // hizo la revisión anterior, para que la próxima sea una revisión
+  // genuina y no una segunda vuelta con el mismo sesgo.
+  if (matriz.primera_revision_por && matriz.primera_revision_por !== req.usuario.id) {
+    run(db, `UPDATE matrices_cumplimiento SET
+        primera_revision_por = NULL, primera_revision_en = NULL,
+        requiere_segunda_revision = 0, motivo_segunda_revision = NULL,
+        segunda_revision_por = ?, segunda_revision_en = datetime('now'),
+        segunda_revision_decision = 'rechaza' WHERE id = ?`,
+      [req.usuario.id, matriz.id]);
+    registrarLog(matriz.postulacion_id, req.usuario.id, 'matriz_segunda_revision_rechazada',
+      `Segunda revisión ciega de la matriz (${matriz.archivo_nombre}) no confirmó la primera revisión -- vuelve a quedar pendiente de revisión desde cero.`);
+    return res.json({ ok: true, vuelve_a_revision: true });
+  }
+
   run(db, 'DELETE FROM matrices_cumplimiento WHERE id = ?', [matriz.id]);
   registrarLog(matriz.postulacion_id, req.usuario.id, 'matriz_descartada',
     `Matriz de cumplimiento (${matriz.archivo_nombre}) descartada sin aprobar.`);
   res.json({ ok: true });
 });
 
-// Al aprobar: genera las filas reales de `documentos` (checklist) y `hitos`
-// (cronograma determinístico, sin nueva llamada a IA -- ver generarCronograma
-// arriba). No duplica documentos que ya existan con el mismo tipo (mismo
-// criterio que /api/plantillas/:id/aplicar).
-app.post('/api/matrices/:id/aprobar', requireLogin, requireRol('equipo'), (req, res) => {
-  const matriz = get(db, 'SELECT * FROM matrices_cumplimiento WHERE id = ?', [req.params.id]);
-  if (!matriz) return res.status(404).json({ error: 'No existe' });
-  if (matriz.estado === 'aprobada') return res.status(400).json({ error: 'Esta matriz ya fue aprobada.' });
-  const postulacion = get(db, 'SELECT * FROM postulaciones WHERE id = ?', [matriz.postulacion_id]);
+// Genera las filas reales de `documentos` (checklist) y `hitos` (cronograma
+// determinístico, sin nueva llamada a IA -- ver generarCronograma arriba) a
+// partir de una matriz ya decidida como aprobada -- reutilizado tanto por la
+// aprobación directa como por la confirmación tras segunda revisión ciega
+// (misma lógica, dos caminos para llegar a "aprobada"). No duplica
+// documentos que ya existan con el mismo tipo (mismo criterio que
+// /api/plantillas/:id/aplicar). Vuelve a leer la matriz de la base (no
+// recibe el objeto ya cargado) para no arrastrar una versión desactualizada.
+function aplicarMatrizAprobada(matrizId, postulacion, aprobadoPorId) {
+  const matriz = get(db, 'SELECT * FROM matrices_cumplimiento WHERE id = ?', [matrizId]);
   const datos = JSON.parse(matriz.datos_json);
 
   const existentes = new Set(all(db, 'SELECT tipo FROM documentos WHERE postulacion_id = ?', [postulacion.id]).map((d) => d.tipo));
@@ -813,7 +1009,8 @@ app.post('/api/matrices/:id/aprobar', requireLogin, requireRol('equipo'), (req, 
       : (item.requisito || item.tipo);
     run(db, `INSERT INTO documentos (postulacion_id, tipo, estado, origen, requiere_firma_externa, estado_firma, estado_auditoria, requisito, sensible, fase)
              VALUES (?,?,?,?,?,?,?,?,?,?)`,
-      [postulacion.id, tipo, 'pendiente', item.origen === 'generado_ia' ? 'generado_ia' : 'externo', 0, 'no_aplica', 'sin_auditar', requisitoConCita, 0, 'postulacion']);
+      [postulacion.id, tipo, 'pendiente', item.origen === 'generado_ia' ? 'generado_ia' : 'externo', 0, 'no_aplica', 'sin_auditar', requisitoConCita,
+        pareceDocumentoSensible(item.tipo, item.requisito) ? 1 : 0, 'postulacion']);
     existentes.add(tipo);
     documentosAgregados++;
   }
@@ -827,10 +1024,105 @@ app.post('/api/matrices/:id/aprobar', requireLogin, requireRol('equipo'), (req, 
   if (hitosAgregados) recalcularProximoHito(postulacion.id);
 
   run(db, `UPDATE matrices_cumplimiento SET estado = 'aprobada', aprobada_por = ?, aprobada_en = datetime('now') WHERE id = ?`,
-    [req.usuario.id, matriz.id]);
+    [aprobadoPorId, matrizId]);
+  return { documentosAgregados, hitosAgregados };
+}
+
+// Cuántos campos de nivel superior cambiaron entre la extracción original
+// (datos_json_original, nunca se pisa) y la versión que se va a aprobar
+// (datos_json, puede tener ediciones vía PUT) -- alimenta el detector de
+// validación complaciente. Comparación superficial (por campo, no un diff
+// fino dentro de arrays) -- alcanza para el propósito: saber si hubo alguna
+// edición real o ninguna.
+function contarCamposEditados(original, actual) {
+  if (!original) return 0;
+  const claves = new Set([...Object.keys(original), ...Object.keys(actual || {})]);
+  let cambios = 0;
+  for (const clave of claves) {
+    if (JSON.stringify(original[clave]) !== JSON.stringify((actual || {})[clave])) cambios++;
+  }
+  return cambios;
+}
+
+// Detector de validación complaciente (arquitectura-panel-control.md 4.3):
+// la literatura de sesgo de automatización muestra que cuando una IA acierta
+// seguido, la supervisión humana se vuelve procedimental en vez de
+// sustantiva -- exactamente el mecanismo que le costó $4.000.000 a Fundación
+// Sewell. Si la misma persona aprobó sus últimas N matrices sin editar nada
+// y rápido, la SIGUIENTE que apruebe queda marcada para una segunda revisión
+// ciega. Además, una fracción pequeña y no anunciada (~10%) se marca igual
+// al azar, sin importar el historial -- un umbral fijo y conocido es
+// gameable (Ley de Goodhart: alcanza con una edición trivial cada N-1 para
+// nunca activar la alerta), la corrección de la sección 13.3 es justamente
+// este muestreo aleatorio combinado con el umbral.
+const UMBRAL_APROBACIONES_SEGUIDAS_SIN_EDITAR = 5;
+const SEGUNDOS_REVISION_RAPIDA = 60;
+const PROBABILIDAD_MUESTREO_ALEATORIO = 0.1;
+function evaluarSiRequiereSegundaRevision(usuarioId) {
+  if (Math.random() < PROBABILIDAD_MUESTREO_ALEATORIO) return 'muestra_aleatoria';
+  const recientes = all(db, `
+    SELECT campos_editados_al_aprobar, segundos_hasta_revision FROM matrices_cumplimiento
+    WHERE aprobada_por = ? AND estado = 'aprobada'
+    ORDER BY aprobada_en DESC LIMIT ?`, [usuarioId, UMBRAL_APROBACIONES_SEGUIDAS_SIN_EDITAR]);
+  if (recientes.length < UMBRAL_APROBACIONES_SEGUIDAS_SIN_EDITAR) return null;
+  const todasSinEditarYRapidas = recientes.every((m) =>
+    (m.campos_editados_al_aprobar || 0) === 0 && (m.segundos_hasta_revision || 0) <= SEGUNDOS_REVISION_RAPIDA);
+  return todasSinEditarYRapidas ? 'validacion_rapida_detectada' : null;
+}
+
+// Aprobar una matriz -- puede ser una primera revisión (camino normal) o,
+// si ya había quedado marcada `requiere_segunda_revision` por una primera
+// revisión de OTRA persona, la confirmación de la segunda revisión ciega
+// (arquitectura-panel-control.md 13.3). Es el mismo botón "Aprobar" en la
+// UI en los dos casos -- lo que cambia es que, en el segundo, la persona
+// nunca vio que ya hubo una aprobación previa (serializarMatrizParaUsuario
+// se lo esconde), así que revisa como si fuera la primera vez.
+app.post('/api/matrices/:id/aprobar', requireLogin, requireRol('equipo'), (req, res) => {
+  const matriz = get(db, 'SELECT * FROM matrices_cumplimiento WHERE id = ?', [req.params.id]);
+  if (!matriz) return res.status(404).json({ error: 'No existe' });
+  if (matriz.estado === 'aprobada') return res.status(400).json({ error: 'Esta matriz ya fue aprobada.' });
+  const postulacion = get(db, 'SELECT * FROM postulaciones WHERE id = ?', [matriz.postulacion_id]);
+
+  // Ya había una primera revisión pendiente de segunda revisión.
+  if (matriz.primera_revision_por) {
+    if (matriz.primera_revision_por === req.usuario.id) {
+      return res.status(400).json({ error: 'Ya registraste tu revisión de esta matriz -- falta que otra persona del equipo la revise para que quede oficial.' });
+    }
+    const resultado = aplicarMatrizAprobada(matriz.id, postulacion, matriz.primera_revision_por);
+    run(db, `UPDATE matrices_cumplimiento SET segunda_revision_por = ?, segunda_revision_en = datetime('now'), segunda_revision_decision = 'confirma' WHERE id = ?`,
+      [req.usuario.id, matriz.id]);
+    registrarLog(postulacion.id, req.usuario.id, 'matriz_aprobada',
+      `Matriz de cumplimiento (${matriz.archivo_nombre}) aprobada tras segunda revisión ciega — ${resultado.documentosAgregados} documentos y ${resultado.hitosAgregados} hitos agregados al checklist.`);
+    return res.json({ ok: true, documentos_agregados: resultado.documentosAgregados, hitos_agregados: resultado.hitosAgregados });
+  }
+
+  // Primera (y, para la mayoría de los casos, única) revisión.
+  const original = matriz.datos_json_original ? JSON.parse(matriz.datos_json_original) : null;
+  const actual = JSON.parse(matriz.datos_json);
+  const camposEditados = contarCamposEditados(original, actual);
+  const segundosRevision = Math.max(0, Math.round((Date.now() - new Date(matriz.creado_en.replace(' ', 'T') + 'Z')) / 1000));
+  const motivoSegundaRevision = evaluarSiRequiereSegundaRevision(req.usuario.id);
+
+  run(db, `UPDATE matrices_cumplimiento SET
+      primera_revision_por = ?, primera_revision_en = datetime('now'),
+      campos_editados_al_aprobar = ?, segundos_hasta_revision = ?,
+      requiere_segunda_revision = ?, motivo_segunda_revision = ?
+      WHERE id = ?`,
+    [req.usuario.id, camposEditados, segundosRevision, motivoSegundaRevision ? 1 : 0, motivoSegundaRevision, matriz.id]);
+
+  if (motivoSegundaRevision) {
+    registrarLog(postulacion.id, req.usuario.id, 'matriz_pendiente_segunda_revision',
+      `Matriz de cumplimiento (${matriz.archivo_nombre}) revisada por ${req.usuario.nombre} -- por control de calidad, queda pendiente de que otra persona del equipo la revise también antes de quedar oficial.`);
+    return res.json({
+      ok: true, requiere_segunda_revision: true,
+      mensaje: 'Tu revisión quedó registrada. Por control de calidad, esta matriz necesita que otra persona del equipo la revise también antes de quedar oficial -- todavía no se generaron los documentos ni el cronograma.',
+    });
+  }
+
+  const resultado = aplicarMatrizAprobada(matriz.id, postulacion, req.usuario.id);
   registrarLog(postulacion.id, req.usuario.id, 'matriz_aprobada',
-    `Matriz de cumplimiento (${matriz.archivo_nombre}) aprobada — ${documentosAgregados} documentos y ${hitosAgregados} hitos agregados al checklist.`);
-  res.json({ ok: true, documentos_agregados: documentosAgregados, hitos_agregados: hitosAgregados });
+    `Matriz de cumplimiento (${matriz.archivo_nombre}) aprobada — ${resultado.documentosAgregados} documentos y ${resultado.hitosAgregados} hitos agregados al checklist.`);
+  res.json({ ok: true, documentos_agregados: resultado.documentosAgregados, hitos_agregados: resultado.hitosAgregados });
 });
 
 // Usuarios del equipo, para poblar selectores de "asignar responsable" —
@@ -1141,7 +1433,7 @@ app.get('/api/panel-equipo', requireLogin, requireRol('equipo'), (req, res) => {
     LEFT JOIN postulaciones p ON p.id = n.postulacion_id
     WHERE n.usuario_id = ? ORDER BY n.id DESC`, [req.usuario.id]);
 
-  res.json({ postulaciones, notificaciones, documentos: documentosDeTodas() });
+  res.json({ postulaciones, notificaciones, documentos: documentosDeTodas().map((d) => ocultarSiSensible(d, req.usuario)) });
 });
 
 app.post('/api/notificaciones/:id/leida', requireLogin, (req, res) => {
@@ -1246,7 +1538,7 @@ app.get('/api/panel-director', requireLogin, requireRol('director'), (req, res) 
     kpis: { tasaAdjudicacion, montoAdjudicadoTotal, montoSolicitadoAdjudicadas, embudo, totalActivas: activas.length },
     lookAhead: { semanas, restricciones },
     postulaciones: activas,
-    documentos: documentosDeTodas(),
+    documentos: documentosDeTodas().map((d) => ocultarSiSensible(d, req.usuario)),
   });
 });
 

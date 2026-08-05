@@ -254,7 +254,7 @@
             <button type="submit" class="btn small secundario">Analizar bases (IA)</button>
           </form>
           <div id="analizarBasesEstado" class="small muted" style="margin-top:6px"></div>
-          ${matrices.length === 0 ? '<p class="small muted" style="margin-top:10px">Sin análisis de bases todavía.</p>' : matrices.map(matrizCard).join('')}
+          ${matrices.length === 0 ? '<p class="small muted" style="margin-top:10px">Sin análisis de bases todavía.</p>' : matrices.map((m) => matrizCard(m, matrices)).join('')}
         </div>`;
       }
       // Guardar/aplicar plantillas es una acción del equipo (arma o reutiliza
@@ -314,9 +314,15 @@
     // antes de aprobar (ej. la IA detectó algo que no aplica), y la fecha de
     // cierre queda editable (el campo más propenso a un error de lectura).
     // Aprobada: solo lectura, como registro de qué se aprobó y cuándo.
-    function matrizCard(m) {
+    function matrizCard(m, todasLasMatrices = []) {
       const d = m.datos_json || {};
       const esPendiente = m.estado === 'pendiente_revision';
+      // Bases modificadas (arquitectura-panel-control.md 13.4): si esta
+      // matriz sigue pendiente y la postulación ya tiene OTRA matriz
+      // aprobada, esto es una revisión, no un primer análisis -- se carga
+      // la comparación campo por campo aparte (async, wireMatrices) en vez
+      // de mezclarla acá porque necesita otra llamada a la API.
+      const esRevisionDeBasesModificadas = esPendiente && todasLasMatrices.some((otra) => otra.id !== m.id && otra.estado === 'aprobada');
       const badgeModo = m.modo === 'sintetico' ? '<span class="badge gris">modo demo, sin API real</span>' : '<span class="badge verde">IA real</span>';
       // Filas en bloque (etiqueta arriba, cita/detalle abajo en su propia
       // línea) en vez de reusar `.fila` (pensada para pares cortos tipo
@@ -348,15 +354,24 @@
           <span class="small muted" style="white-space:nowrap;">${c.ponderacion || '—'}</span>
         </div>`).join('');
 
+      // Si el backend nos manda primera_revision_por, es porque esta matriz
+      // es nuestra (serializarMatrizParaUsuario en server.js se lo esconde
+      // a cualquier otra persona -- segunda revisión ciega, sección 13.3) y
+      // está esperando que otra persona del equipo la revise. Para
+      // cualquier otra persona, la matriz simplemente se ve como una
+      // pendiente normal -- ni se enteran de que ya hubo una revisión.
+      const esperandoSegundaRevision = esPendiente && !!m.primera_revision_por;
+
       return `
         <div class="card" style="margin-top:10px">
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
             <b>📄 ${m.archivo_nombre}</b>
-            <span>${badgeModo} <span class="badge ${esPendiente ? 'gris' : 'verde'}">${esPendiente ? 'pendiente de revisión' : 'aprobada'}</span></span>
+            <span>${badgeModo} <span class="badge ${esPendiente ? 'gris' : 'verde'}">${esPendiente ? (esperandoSegundaRevision ? 'esperando 2ª revisión' : 'pendiente de revisión') : 'aprobada'}</span>${esRevisionDeBasesModificadas ? ' <span class="badge ambar">bases modificadas</span>' : ''}</span>
           </div>
+          ${esRevisionDeBasesModificadas ? `<div id="comparacion-${m.id}" class="small muted" style="margin:8px 0; padding:8px; background:var(--gray-bg, #F7F8FA); border-radius:8px;">Comparando con la matriz vigente…</div>` : ''}
           ${d.resumen ? `<p class="small muted" style="margin:6px 0">${d.resumen}</p>` : ''}
           <div class="small" style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:8px;">
-            <span><b>Cierre:</b> ${esPendiente
+            <span><b>Cierre:</b> ${esPendiente && !esperandoSegundaRevision
               ? `<input type="date" class="fecha-cierre-input" data-mid="${m.id}" value="${d.fecha_cierre || ''}" style="font-size:12px; padding:2px" />`
               : (d.fecha_cierre ? fmtFecha(d.fecha_cierre) : '—')}</span>
             <span><b>Monto máximo:</b> ${d.monto_maximo ? fmtMoney(d.monto_maximo) : '—'}</span>
@@ -364,13 +379,42 @@
           ${checklist.length ? `<div class="small muted"><b>Checklist propuesto (${checklist.length})</b></div>${filasChecklist}` : '<p class="small muted">Sin checklist detectado en el documento.</p>'}
           ${filasTopes ? `<div class="small muted" style="margin-top:10px"><b>Topes de gasto por categoría</b></div>${filasTopes}` : ''}
           ${filasCriterios ? `<div class="small muted" style="margin-top:10px"><b>Criterios de evaluación</b></div>${filasCriterios}` : ''}
-          ${esPendiente
-            ? `<div class="doc-actions" style="margin-top:12px">
-                <button class="btn small" data-aprobar-matriz="${m.id}">✓ Aprobar y generar checklist</button>
-                <button class="btn small secundario" data-descartar-matriz="${m.id}">Descartar</button>
-              </div>`
-            : `<p class="small muted" style="margin-top:8px">Aprobada por ${m.creado_por_nombre || '—'} el ${fmtFechaHora(m.aprobada_en)}.</p>`}
+          ${esperandoSegundaRevision
+            ? `<p class="small muted" style="margin-top:12px">Ya registraste tu revisión (control de calidad, arquitectura-panel-control.md 4.3) — falta que otra persona del equipo la revise también antes de que quede oficial.</p>`
+            : esPendiente
+              ? `<div class="doc-actions" style="margin-top:12px">
+                  <button class="btn small" data-aprobar-matriz="${m.id}">✓ Aprobar y generar checklist</button>
+                  <button class="btn small secundario" data-descartar-matriz="${m.id}">Descartar</button>
+                </div>`
+              : `<p class="small muted" style="margin-top:8px">Aprobada por ${m.creado_por_nombre || '—'} el ${fmtFechaHora(m.aprobada_en)}.</p>`}
         </div>`;
+    }
+
+    // Comparación campo por campo contra la matriz vigente (bases
+    // modificadas, arquitectura-panel-control.md 13.4) -- se carga aparte
+    // porque necesita su propia llamada a la API (GET /api/matrices/:id/comparar,
+    // determinística, sin IA). Vive fuera de matrizCard() porque esa función
+    // solo arma HTML de forma síncrona.
+    async function cargarComparacion(mid, el) {
+      try {
+        const c = await api(`/api/matrices/${mid}/comparar`);
+        if (!c.hayVigente) { el.style.display = 'none'; return; }
+        const filasGenerales = Object.entries(c.cambiosGenerales || {}).map(([campo, v]) =>
+          `<div class="small" style="margin-top:4px"><b>${campo}:</b> <span class="muted">${v.antes ?? '—'}</span> → <b>${v.despues ?? '—'}</b></div>`).join('');
+        const listaItems = (items, etiqueta) => items.length
+          ? `<div class="small" style="margin-top:4px"><b>${etiqueta}:</b> ${items.map((it) => it.tipo || (it.despues && it.despues.tipo)).join(', ')}</div>` : '';
+        if (!c.hayCambios) {
+          el.innerHTML = `Se comparó contra la matriz vigente (“${c.vigenteArchivo}”, aprobada el ${fmtFechaHora(c.vigenteAprobadaEn)}) y no hay cambios relevantes.`;
+        } else {
+          el.innerHTML = `<b>Cambios frente a la matriz vigente</b> (“${c.vigenteArchivo}”, aprobada el ${fmtFechaHora(c.vigenteAprobadaEn)}):
+            ${filasGenerales}
+            ${listaItems(c.checklistAgregado, 'Documentos nuevos')}
+            ${listaItems(c.checklistQuitado, 'Documentos que ya no aparecen')}
+            ${listaItems(c.checklistModificado, 'Documentos con el requisito cambiado')}`;
+        }
+      } catch (e) {
+        el.textContent = 'No se pudo cargar la comparación (' + e.message + ').';
+      }
     }
 
     function wireMatrices() {
@@ -402,6 +446,10 @@
           }
         });
       }
+      document.querySelectorAll('#matricesCard [id^="comparacion-"]').forEach((el) => {
+        const mid = el.id.replace('comparacion-', '');
+        cargarComparacion(mid, el);
+      });
       document.querySelectorAll('#matricesCard [data-aprobar-matriz]').forEach((btn) => {
         btn.addEventListener('click', async () => {
           const mid = btn.dataset.aprobarMatriz;
@@ -518,6 +566,20 @@
     }
 
     function docRow(d, puedeActuar) {
+      // Documento sensible (Ley 21.719) y esta persona no es ni el
+      // responsable ni director/admin -- el backend ya sacó el contenido
+      // (ocultarSiSensible en server.js), acá solo se explica por qué la
+      // fila se ve vacía en vez de dejarla parecer un bug.
+      if (d.acceso_restringido) {
+        return `
+          <div class="doc-row">
+            <div class="doc-head">
+              <span class="doc-tipo">${d.tipo} <span class="small muted">🔒 sensible</span></span>
+              <span>${estadoBadge(d.estado)}</span>
+            </div>
+            <div class="small muted">Acceso restringido (Ley 21.719) — solo lo puede ver el responsable asignado y el director.</div>
+          </div>`;
+      }
       const claseFila = d.estado_auditoria === 'no_cumple' || d.estado_auditoria === 'falta' ? d.estado_auditoria : (d.estado_auditoria === 'cumple' ? 'cumple' : '');
       let acciones = '';
       let subirArchivo = '';

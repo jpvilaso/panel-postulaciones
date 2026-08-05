@@ -278,16 +278,37 @@ CREATE TABLE IF NOT EXISTS notificaciones (
 -- checklist propuesto ya separado en externos vs. anexos propios del fondo,
 -- cada dato con su cita textual y página de origen). Al aprobar, genera las
 -- filas reales en `documentos` y `hitos` -- ver POST /api/matrices/:id/aprobar.
+-- Columnas agregadas el 2026-08-05 (salvaguardas de arquitectura-panel-control.md
+-- secciones 4.3/13.3/13.4/14.4): datos_json_original guarda la extracción tal
+-- cual salió de la IA, sin ediciones -- nunca se pisa, sirve para contar
+-- cuántos campos se editaron antes de aprobar (detector de validación
+-- complaciente). requiere_segunda_revision + primera_revision_*/segunda_revision_*
+-- implementan la revisión ciega (13.3) sin agregar un estado nuevo a `estado`
+-- (para no tener que tocar el CHECK de una tabla que ya puede tener filas
+-- reales en producción) -- mientras falte la segunda revisión, `estado` se
+-- queda en 'pendiente_revision' aunque ya haya habido una primera aprobación.
 CREATE TABLE IF NOT EXISTS matrices_cumplimiento (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   postulacion_id INTEGER NOT NULL REFERENCES postulaciones(id),
   archivo_nombre TEXT,
   estado TEXT NOT NULL DEFAULT 'pendiente_revision' CHECK (estado IN ('pendiente_revision', 'aprobada')),
   datos_json TEXT NOT NULL,
+  datos_json_original TEXT,
   editada INTEGER NOT NULL DEFAULT 0,
   modo TEXT NOT NULL,
+  prompt_version TEXT,
   tokens_entrada INTEGER,
   tokens_salida INTEGER,
+  campos_editados_al_aprobar INTEGER,
+  segundos_hasta_revision INTEGER,
+  requiere_segunda_revision INTEGER NOT NULL DEFAULT 0,
+  motivo_segunda_revision TEXT,
+  primera_revision_por INTEGER REFERENCES usuarios(id),
+  primera_revision_en TEXT,
+  segunda_revision_por INTEGER REFERENCES usuarios(id),
+  segunda_revision_en TEXT,
+  segunda_revision_decision TEXT,
+  segunda_revision_detalle TEXT,
   creado_por INTEGER REFERENCES usuarios(id),
   creado_en TEXT NOT NULL DEFAULT (datetime('now')),
   aprobada_por INTEGER REFERENCES usuarios(id),
